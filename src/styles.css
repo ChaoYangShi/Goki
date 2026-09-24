@@ -1,0 +1,261 @@
+:root {
+  color: #ecfbff;
+  font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* { box-sizing: border-box; }
+html, body, #app {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+button, input { font: inherit; }
+
+.pet-shell {
+  position: relative;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  transition: transform 180ms ease;
+}
+.pet {
+  position: relative;
+  width: 148px;
+  height: 148px;
+  padding: 0;
+  border: 0;
+  border-radius: 48px;
+  background: transparent;
+  cursor: pointer;
+}
+.pet-aura {
+  position: absolute;
+  inset: 19px;
+  border-radius: 42px;
+  background: rgba(79, 221, 246, 0.12);
+  box-shadow: 0 0 28px rgba(44, 195, 235, 0.34);
+  transition: background 220ms ease, box-shadow 220ms ease;
+}
+.pet-body {
+  position: absolute;
+  inset: 26px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border: 1px solid rgba(159, 235, 255, 0.7);
+  border-radius: 28px;
+  background: rgba(7, 16, 23, 0.92);
+  box-shadow: inset 0 0 24px rgba(42, 183, 218, 0.08), 0 0 18px rgba(48, 186, 222, 0.33);
+  transform: rotate(-2deg);
+  transition: border-color 220ms ease, box-shadow 220ms ease, transform 220ms ease;
+}
+.pet-eyes {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  gap: 17px;
+  align-items: center;
+}
+.pet-eyes i {
+  display: block;
+  width: 9px;
+  height: 30px;
+  border-radius: 999px;
+  background: #9ff7ff;
+  box-shadow: 0 0 9px #67ecff;
+  transition: all 180ms ease;
+}
+.pet-liquid {
+  position: absolute;
+  right: -20%;
+  bottom: -56%;
+  left: -20%;
+  height: 62%;
+  border-radius: 48% 52% 0 0;
+  background: rgba(71, 213, 226, 0.45);
+  transform: translateY(100%);
+  transition: transform 450ms ease, background 450ms ease;
+}
+.pet-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+.pet-shell[data-state="sleep"] .pet-body {
+  animation: breathe 3.8s ease-in-out infinite;
+}
+.pet-shell[data-state="sleep"] .pet-eyes i {
+  width: 22px;
+  height: 4px;
+}
+.pet-shell[data-state="focused"] .pet-body {
+  border-color: rgba(255, 204, 106, 0.92);
+  box-shadow: inset 0 0 24px rgba(255, 153, 41, 0.1), 0 0 20px rgba(255, 174, 59, 0.42);
+  transform: rotate(-2deg) translateY(4px) skewX(-2deg);
+}
+.pet-shell[data-state="focused"] .pet-eyes i {
+  width: 20px;
+  height: 11px;
+  background: #ffd36e;
+  box-shadow: 0 0 10px #ffb83e;
+}
+.pet-shell[data-state="overload"] .pet-body {
+  border-color: rgba(255, 101, 101, 0.95);
+  animation: tremble 170ms linear infinite;
+  box-shadow: inset 0 0 25px rgba(255, 52, 67, 0.16), 0 0 24px rgba(255, 54, 69, 0.5);
+}
+.pet-shell[data-state="overload"] .pet-eyes i {
+  height: 8px;
+  background: #ff777d;
+  box-shadow: 0 0 10px #ff404b;
+  transform: rotate(20deg);
+}
+.pet-shell.is-dragging .pet-aura,
+.pet-shell.is-processing .pet-aura {
+  background: rgba(255, 189, 74, 0.2);
+  box-shadow: 0 0 36px rgba(255, 180, 62, 0.5);
+}
+.pet-shell.is-processing .pet-liquid {
+  transform: translateY(0);
+  background: rgba(255, 178, 64, 0.55);
+  animation: liquid 1.8s ease-in-out infinite alternate;
+}
+.pet-shell.is-processing .pet-body {
+  border-color: rgba(255, 204, 106, 0.92);
+  box-shadow: inset 0 0 24px rgba(255, 153, 41, 0.1), 0 0 20px rgba(255, 174, 59, 0.42);
+}
+.pet-shell.is-success .pet-body {
+  border-color: #a9ffb0;
+  box-shadow: 0 0 40px rgba(91, 255, 114, 0.8);
+}
+.pet-shell.is-error .pet-body {
+  animation: shake 120ms linear 8;
+  border-color: #ff7785;
+}
+
+.hud-shell {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  padding: 24px;
+  place-items: center;
+  background: rgba(1, 5, 9, 0.08);
+}
+.hud-panel {
+  width: min(100%, 620px);
+  min-height: 250px;
+  padding: 18px;
+  border: 1px solid rgba(114, 226, 246, 0.55);
+  border-radius: 18px;
+  background: rgba(8, 17, 24, 0.95);
+  box-shadow: 0 20px 70px rgba(0, 0, 0, 0.48), 0 0 28px rgba(58, 203, 233, 0.18);
+}
+.search-row {
+  display: flex;
+  gap: 11px;
+  align-items: center;
+  padding: 3px 5px 13px;
+  border-bottom: 1px solid rgba(147, 229, 241, 0.15);
+}
+.search-icon {
+  color: #84eefb;
+  font-size: 28px;
+  line-height: 1;
+}
+#search-input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: #e9fbff;
+  background: transparent;
+  font-size: 19px;
+}
+#search-input::placeholder { color: rgba(198, 229, 235, 0.42); }
+kbd {
+  padding: 3px 6px;
+  border: 1px solid rgba(167, 225, 233, 0.24);
+  border-radius: 5px;
+  color: rgba(207, 241, 245, 0.58);
+  background: rgba(255, 255, 255, 0.06);
+  font-size: 10px;
+}
+.result-meta {
+  min-height: 31px;
+  padding: 11px 3px 4px;
+  color: rgba(193, 229, 235, 0.48);
+  font-size: 12px;
+}
+.results { max-height: 292px; overflow-y: auto; }
+.result-item {
+  display: flex;
+  width: 100%;
+  gap: 12px;
+  align-items: center;
+  padding: 10px 9px;
+  border: 0;
+  border-radius: 9px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.result-item:hover,
+.result-item.is-selected { background: rgba(91, 214, 237, 0.12); }
+.result-kind {
+  width: 22px;
+  color: #84e9f8;
+  font-size: 16px;
+  text-align: center;
+}
+.result-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+.result-copy strong,
+.result-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.result-copy strong { font-size: 13px; font-weight: 500; }
+.result-copy small {
+  color: rgba(192, 226, 232, 0.45);
+  font-size: 11px;
+}
+.hud-footer {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  padding-top: 13px;
+  color: rgba(198, 232, 237, 0.42);
+  font-size: 11px;
+}
+.hud-footer kbd { margin-right: 4px; }
+
+@keyframes breathe {
+  0%, 100% { transform: rotate(-2deg) translateY(0); }
+  50% { transform: rotate(-2deg) translateY(3px); }
+}
+@keyframes tremble {
+  0%, 100% { transform: translateX(0) rotate(-2deg); }
+  50% { transform: translateX(1px) rotate(-2deg); }
+}
+@keyframes liquid {
+  from { transform: translateY(3px) rotate(-1deg); }
+  to { transform: translateY(-4px) rotate(1deg); }
+}
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  50% { transform: translateX(6px); }
+}

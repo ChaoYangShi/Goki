@@ -1,0 +1,251 @@
+import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import "./styles.css";
+
+type SearchResult = {
+  name: string;
+  path: string;
+  kind: "file" | "folder";
+};
+
+type DragPayload = {
+  paths?: string[];
+};
+
+const app = document.querySelector<HTMLDivElement>("#app");
+if (!app) {
+  throw new Error("Goki root element is missing");
+}
+
+const currentWindow = getCurrentWindow();
+if (currentWindow.label === "hud") {
+  renderHud(app);
+} else {
+  renderPet(app);
+}
+
+function renderPet(root: HTMLDivElement) {
+  root.innerHTML = `
+    <main class="pet-shell" aria-label="Goki">
+      <button class="pet" id="pet-button" aria-label="打开 Goki 搜索">
+        <span class="pet-aura"></span>
+        <span class="pet-body">
+          <span class="pet-eyes"><i></i><i></i></span>
+          <span class="pet-liquid"></span>
+        </span>
+      </button>
+      <span class="pet-status" id="pet-status">清醒</span>
+    </main>
+  `;
+
+  const shell = root.querySelector<HTMLElement>(".pet-shell")!;
+  const button = root.querySelector<HTMLButtonElement>("#pet-button")!;
+  const status = root.querySelector<HTMLElement>("#pet-status")!;
+
+  button.addEventListener("click", () => {
+    void invoke("show_hud");
+  });
+
+  void listen<DragPayload>("tauri://drag-over", () => {
+    shell.classList.add("is-dragging");
+  });
+  void listen("tauri://drag-leave", () => {
+    shell.classList.remove("is-dragging");
+  });
+  void listen<DragPayload>("tauri://drag-drop", async (event) => {
+    shell.classList.remove("is-dragging");
+    const paths = event.payload.paths ?? [];
+    if (paths.length === 0) {
+      return;
+    }
+
+    shell.classList.add("is-processing");
+    status.textContent = "处理中";
+    try {
+      const results = await invoke<Array<{ message: string }>>("process_drop", { paths });
+      status.textContent = results[0]?.message ?? "已完成";
+      shell.classList.add("is-success");
+      window.setTimeout(() => shell.classList.remove("is-success"), 1100);
+    } catch (error) {
+      status.textContent = String(error);
+      shell.classList.add("is-error");
+      window.setTimeout(() => shell.classList.remove("is-error"), 1400);
+    } finally {
+      shell.classList.remove("is-processing");
+      window.setTimeout(() => {
+        status.textContent = "清醒";
+      }, 1500);
+    }
+  });
+
+  const updateCpuState = async () => {
+    try {
+      const usage = await invoke<number>("cpu_usage");
+      const state =
+        usage < 10 ? "sleep" : usage < 50 ? "awake" : usage < 80 ? "focused" : "overload";
+      shell.dataset.state = state;
+      if (
+        shell.classList.contains("is-processing") ||
+        shell.classList.contains("is-success") ||
+        shell.classList.contains("is-error")
+      ) {
+        return;
+      }
+      status.textContent =
+        state === "sleep"
+          ? "浅睡"
+          : state === "awake"
+            ? "清醒"
+            : state === "focused"
+              ? "专注"
+              : "过载";
+    } catch {
+      shell.dataset.state = "awake";
+    }
+  };
+  void updateCpuState();
+  window.setInterval(() => void updateCpuState(), 2500);
+}
+
+function renderHud(root: HTMLDivElement) {
+  root.innerHTML = `
+    <main class="hud-shell" id="hud-shell">
+      <section class="hud-panel" role="dialog" aria-label="搜索文件">
+        <div class="search-row">
+          <span class="search-icon" aria-hidden="true">⌕</span>
+          <input id="search-input" type="search" autocomplete="off" placeholder="搜索文件名..." />
+          <kbd>ESC</kbd>
+        </div>
+        <div class="result-meta" id="result-meta">输入文件名开始搜索</div>
+        <div class="results" id="results" role="listbox"></div>
+        <div class="hud-footer">
+          <span><kbd>↑</kbd><kbd>↓</kbd>选择</span>
+          <span><kbd>Enter</kbd>打开</span>
+        </div>
+      </section>
+    </main>
+  `;
+
+  const shell = root.querySelector<HTMLElement>("#hud-shell")!;
+  const input = root.querySelector<HTMLInputElement>("#search-input")!;
+  const results = root.querySelector<HTMLDivElement>("#results")!;
+  const meta = root.querySelector<HTMLDivElement>("#result-meta")!;
+  let currentResults: SearchResult[] = [];
+  let selectedIndex = 0;
+  let debounceTimer: number | undefined;
+  let searchGeneration = 0;
+
+  const hide = async () => {
+    await invoke("hide_hud");
+  };
+
+  const openSelected = () => {
+    const result = currentResults[selectedIndex];
+    if (!result) {
+      return;
+    }
+    void invoke("open_path", { path: result.path, kind: result.kind });
+    void hide();
+  };
+
+  const paintResults = () => {
+    results.innerHTML = currentResults
+      .map(
+        (result, index) => `
+          <button class="result-item ${index === selectedIndex ? "is-selected" : ""}" data-index="${index}" role="option">
+            <span class="result-kind">${result.kind === "folder" ? "▰" : "▱"}</span>
+            <span class="result-copy">
+              <strong>${escapeHtml(result.name)}</strong>
+              <small>${escapeHtml(result.path)}</small>
+            </span>
+          </button>
+        `,
+      )
+      .join("");
+    results.querySelectorAll<HTMLButtonElement>(".result-item").forEach((item) => {
+      item.addEventListener("click", () => {
+        selectedIndex = Number(item.dataset.index);
+        openSelected();
+      });
+    });
+  };
+
+  const search = async () => {
+    const query = input.value.trim();
+    if (!query) {
+      currentResults = [];
+      meta.textContent = "输入文件名开始搜索";
+      paintResults();
+      return;
+    }
+    meta.textContent = "正在搜索...";
+    const generation = ++searchGeneration;
+    try {
+      const nextResults = await invoke<SearchResult[]>("search_files", { query });
+      if (generation !== searchGeneration) {
+        return;
+      }
+      currentResults = nextResults;
+      selectedIndex = 0;
+      meta.textContent = currentResults.length
+        ? `${currentResults.length} 个结果`
+        : "没有找到匹配文件";
+      paintResults();
+    } catch (error) {
+      currentResults = [];
+      meta.textContent = String(error);
+      paintResults();
+    }
+  };
+
+  input.addEventListener("input", () => {
+    window.clearTimeout(debounceTimer);
+    debounceTimer = window.setTimeout(() => void search(), 160);
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      void hide();
+    } else if (event.key === "ArrowDown") {
+      event.preventDefault();
+      selectedIndex = Math.min(selectedIndex + 1, currentResults.length - 1);
+      paintResults();
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      selectedIndex = Math.max(selectedIndex - 1, 0);
+      paintResults();
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      openSelected();
+    }
+  });
+
+  shell.addEventListener("click", (event) => {
+    if (event.target === shell) {
+      void hide();
+    }
+  });
+  void listen("global-hotkey", () => {
+    input.focus();
+    input.select();
+  });
+  void listen("hud-opened", () => {
+    input.focus();
+    input.select();
+  });
+}
+
+function escapeHtml(value: string) {
+  return value.replace(
+    /[&<>"']/g,
+    (character) =>
+      ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#039;",
+      })[character]!,
+  );
+}
