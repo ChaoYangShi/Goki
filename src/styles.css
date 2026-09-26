@@ -14,6 +14,7 @@ html, body, #app {
   background: transparent;
 }
 button, input { font: inherit; }
+button { -webkit-appearance: none; appearance: none; }
 
 .pet-shell {
   position: relative;
@@ -32,15 +33,12 @@ button, input { font: inherit; }
   border-radius: 48px;
   background: transparent;
   cursor: pointer;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
 }
-.pet-aura {
-  position: absolute;
-  inset: 19px;
-  border-radius: 42px;
-  background: rgba(79, 221, 246, 0.12);
-  box-shadow: 0 0 28px rgba(44, 195, 235, 0.34);
-  transition: background 220ms ease, box-shadow 220ms ease;
-}
+.pet:focus,
+.pet:focus-visible,
+.pet:active { outline: none; }
 .pet-body {
   position: absolute;
   inset: 26px;
@@ -119,11 +117,6 @@ button, input { font: inherit; }
   box-shadow: 0 0 10px #ff404b;
   transform: rotate(20deg);
 }
-.pet-shell.is-dragging .pet-aura,
-.pet-shell.is-processing .pet-aura {
-  background: rgba(255, 189, 74, 0.2);
-  box-shadow: 0 0 36px rgba(255, 180, 62, 0.5);
-}
 .pet-shell.is-processing .pet-liquid {
   transform: translateY(0);
   background: rgba(255, 178, 64, 0.55);
@@ -140,6 +133,33 @@ button, input { font: inherit; }
 .pet-shell.is-error .pet-body {
   animation: shake 120ms linear 8;
   border-color: #ff7785;
+}
+
+/* Grok Ball supplies the SVG body and eye-ring expressions. The wrapper only
+   controls placement and state feedback, keeping the face mouthless. */
+.pet-ball {
+  position: absolute;
+  inset: 5px;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  filter: none;
+  transition: transform 220ms ease;
+}
+.pet-ball svg {
+  width: 100%;
+  height: 100%;
+}
+.pet-shell.is-dragging .pet-ball,
+.pet-shell.is-processing .pet-ball {
+  filter: none;
+}
+.pet-shell.is-success .pet-ball {
+  filter: none;
+}
+.pet-shell.is-error .pet-ball {
+  animation: shake 120ms linear 8;
+  filter: none;
 }
 
 .hud-shell {

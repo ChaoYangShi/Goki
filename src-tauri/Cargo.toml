@@ -1,7 +1,7 @@
 [package]
 name = "goki"
 version = "0.1.0"
-description = "Goki Windows desktop companion"
+description = "Goki cross-platform desktop companion"
 authors = ["Goki"]
 edition = "2021"
 
@@ -17,6 +17,6 @@ dirs = "5.0"
 global-hotkey = "0.6"
 serde = { version = "1.0", features = ["derive"] }
 sysinfo = "0.30"
-tauri = "2.0.0"
+tauri = { version = "2.0.0", features = ["macos-private-api"] }
 walkdir = "2.5"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }

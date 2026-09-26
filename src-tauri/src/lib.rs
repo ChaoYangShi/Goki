@@ -11,8 +11,9 @@ use global_hotkey::{
     GlobalHotKeyEvent, GlobalHotKeyManager,
 };
 use serde::Serialize;
-use sysinfo::{CpuExt, System, SystemExt};
+use sysinfo::System;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WindowEvent};
+#[cfg(not(target_os = "macos"))]
 use walkdir::WalkDir;
 use zip::{read::ZipArchive, write::FileOptions, CompressionMethod, ZipWriter};
 
@@ -53,6 +54,7 @@ async fn search_files(query: String) -> Result<Vec<SearchResult>, String> {
         .map_err(|error| format!("搜索任务失败: {error}"))?
 }
 
+#[cfg(not(target_os = "macos"))]
 fn search_files_blocking(query: &str) -> Result<Vec<SearchResult>, String> {
     let mut results = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -111,10 +113,61 @@ fn search_files_blocking(query: &str) -> Result<Vec<SearchResult>, String> {
     Ok(results)
 }
 
+#[cfg(target_os = "macos")]
+fn search_files_blocking(query: &str) -> Result<Vec<SearchResult>, String> {
+    let Some(home) = dirs::home_dir() else {
+        return Ok(Vec::new());
+    };
+    let query = format!("name:{query}");
+    let output = std::process::Command::new("/usr/bin/mdfind")
+        .args([
+            "-onlyin",
+            home.to_string_lossy().as_ref(),
+            "-interpret",
+            &query,
+        ])
+        .output()
+        .map_err(io_error)?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+
+    let mut results = Vec::new();
+    for line in String::from_utf8_lossy(&output.stdout).lines().take(80) {
+        let path = PathBuf::from(line);
+        let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if !name
+            .to_lowercase()
+            .contains(query.trim_start_matches("name:").to_lowercase().as_str())
+        {
+            continue;
+        }
+        results.push(SearchResult {
+            name: name.to_owned(),
+            path: line.to_owned(),
+            kind: if path.is_dir() { "folder" } else { "file" }.to_owned(),
+        });
+    }
+    results.sort_by_key(|result| {
+        (
+            !result
+                .name
+                .to_lowercase()
+                .starts_with(query.trim_start_matches("name:")),
+            result.name.to_lowercase(),
+        )
+    });
+    Ok(results)
+}
+
+#[cfg(not(target_os = "macos"))]
 fn search_roots() -> Vec<PathBuf> {
     dirs::home_dir().into_iter().collect()
 }
 
+#[cfg(not(target_os = "macos"))]
 fn should_skip_directory(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
@@ -213,8 +266,14 @@ fn unique_file(base: &Path) -> PathBuf {
     if !base.exists() {
         return base.to_owned();
     }
-    let stem = base.file_stem().and_then(|name| name.to_str()).unwrap_or("archive");
-    let extension = base.extension().and_then(|name| name.to_str()).unwrap_or("zip");
+    let stem = base
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .unwrap_or("archive");
+    let extension = base
+        .extension()
+        .and_then(|name| name.to_str())
+        .unwrap_or("zip");
     for index in 2..1000 {
         let candidate = base.with_file_name(format!("{stem} ({index}).{extension}"));
         if !candidate.exists() {
@@ -319,20 +378,44 @@ fn hide_hud(app: AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 fn open_path(path: String, kind: String) -> Result<(), String> {
-    let mut command = std::process::Command::new("explorer.exe");
-    if kind == "file" {
-        command.arg("/select,");
+    let path = PathBuf::from(path);
+    if !path.exists() {
+        return Err(format!("路径不存在: {}", path.display()));
     }
-    command
-        .arg(path)
-        .spawn()
-        .map(|_| ())
-        .map_err(io_error)
+
+    // Use each platform's native file manager so search results open with the
+    // expected selection and Finder/Explorer behavior.
+    #[cfg(target_os = "windows")]
+    let mut command = {
+        let mut command = std::process::Command::new("explorer.exe");
+        if kind == "file" {
+            command.arg("/select,");
+        }
+        command
+    };
+
+    #[cfg(target_os = "macos")]
+    let mut command = {
+        let mut command = std::process::Command::new("open");
+        if kind == "file" {
+            command.arg("-R");
+        }
+        command
+    };
+
+    #[cfg(target_os = "linux")]
+    let mut command = std::process::Command::new("xdg-open");
+
+    command.arg(path).spawn().map(|_| ()).map_err(io_error)
 }
 
 fn install_global_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let manager: &'static GlobalHotKeyManager = Box::leak(Box::new(GlobalHotKeyManager::new()?));
-    let hotkey = HotKey::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::Space);
+    #[cfg(target_os = "macos")]
+    let modifier = Modifiers::SUPER;
+    #[cfg(not(target_os = "macos"))]
+    let modifier = Modifiers::CONTROL;
+    let hotkey = HotKey::new(Some(modifier | Modifiers::SHIFT), Code::Space);
     manager.register(hotkey)?;
 
     let app_handle = app.handle().clone();

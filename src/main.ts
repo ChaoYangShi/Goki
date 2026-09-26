@@ -13,6 +13,33 @@ type DragPayload = {
   paths?: string[];
 };
 
+type GrokBallEngine = {
+  setEmotion: (id: string, options?: { auto?: boolean }) => boolean;
+  setGaze: (x: number, y: number) => GrokBallEngine;
+  clearGaze: () => GrokBallEngine;
+  bounce: () => GrokBallEngine;
+  burst: (count?: number) => GrokBallEngine;
+  spin: (turns?: number, direction?: -1 | 1) => GrokBallEngine;
+};
+
+declare global {
+  interface Window {
+    GrokBall?: {
+      create: (
+        target: Element,
+        options?: {
+          emotion?: string;
+          color?: string;
+          eyeColor?: string;
+          shape?: "blob" | "wedge" | "gem";
+          label?: string;
+          idle?: boolean;
+        },
+      ) => GrokBallEngine;
+    };
+  }
+}
+
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
   throw new Error("Goki root element is missing");
@@ -29,11 +56,7 @@ function renderPet(root: HTMLDivElement) {
   root.innerHTML = `
     <main class="pet-shell" aria-label="Goki">
       <button class="pet" id="pet-button" aria-label="打开 Goki 搜索">
-        <span class="pet-aura"></span>
-        <span class="pet-body">
-          <span class="pet-eyes"><i></i><i></i></span>
-          <span class="pet-liquid"></span>
-        </span>
+        <span class="pet-ball" id="pet-ball"></span>
       </button>
       <span class="pet-status" id="pet-status">清醒</span>
     </main>
@@ -42,6 +65,26 @@ function renderPet(root: HTMLDivElement) {
   const shell = root.querySelector<HTMLElement>(".pet-shell")!;
   const button = root.querySelector<HTMLButtonElement>("#pet-button")!;
   const status = root.querySelector<HTMLElement>("#pet-status")!;
+  const ballMount = root.querySelector<HTMLElement>("#pet-ball")!;
+  const ball = window.GrokBall?.create(ballMount, {
+    emotion: "02",
+    color: "#15191d",
+    eyeColor: "#f4f4f4",
+    shape: "blob",
+    label: "Goki",
+    idle: false,
+  });
+  let zoom = 1;
+
+  button.addEventListener("wheel", (event) => {
+    event.preventDefault();
+    zoom = Math.min(1.55, Math.max(0.65, zoom + (event.deltaY < 0 ? 0.08 : -0.08)));
+    ballMount.style.transform = `scale(${zoom})`;
+  }, { passive: false });
+
+  const setEmotion = (emotion: string) => {
+    ball?.setEmotion(emotion);
+  };
 
   button.addEventListener("click", () => {
     void invoke("show_hud");
@@ -49,9 +92,11 @@ function renderPet(root: HTMLDivElement) {
 
   void listen<DragPayload>("tauri://drag-over", () => {
     shell.classList.add("is-dragging");
+    setEmotion("31");
   });
   void listen("tauri://drag-leave", () => {
     shell.classList.remove("is-dragging");
+    setEmotion("02");
   });
   void listen<DragPayload>("tauri://drag-drop", async (event) => {
     shell.classList.remove("is-dragging");
@@ -61,20 +106,24 @@ function renderPet(root: HTMLDivElement) {
     }
 
     shell.classList.add("is-processing");
+    setEmotion("32");
     status.textContent = "处理中";
     try {
       const results = await invoke<Array<{ message: string }>>("process_drop", { paths });
       status.textContent = results[0]?.message ?? "已完成";
       shell.classList.add("is-success");
+      setEmotion("33");
       window.setTimeout(() => shell.classList.remove("is-success"), 1100);
     } catch (error) {
       status.textContent = String(error);
       shell.classList.add("is-error");
+      setEmotion("34");
       window.setTimeout(() => shell.classList.remove("is-error"), 1400);
     } finally {
       shell.classList.remove("is-processing");
       window.setTimeout(() => {
         status.textContent = "清醒";
+        setEmotion("02");
       }, 1500);
     }
   });
@@ -83,8 +132,9 @@ function renderPet(root: HTMLDivElement) {
     try {
       const usage = await invoke<number>("cpu_usage");
       const state =
-        usage < 10 ? "sleep" : usage < 50 ? "awake" : usage < 80 ? "focused" : "overload";
+        usage < 10 ? "00" : usage < 50 ? "02" : usage < 80 ? "16" : "21";
       shell.dataset.state = state;
+      setEmotion(state);
       if (
         shell.classList.contains("is-processing") ||
         shell.classList.contains("is-success") ||
@@ -93,11 +143,11 @@ function renderPet(root: HTMLDivElement) {
         return;
       }
       status.textContent =
-        state === "sleep"
+        state === "00"
           ? "浅睡"
-          : state === "awake"
+          : state === "02"
             ? "清醒"
-            : state === "focused"
+            : state === "16"
               ? "专注"
               : "过载";
     } catch {
