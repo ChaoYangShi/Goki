@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./styles.css";
 
@@ -75,6 +76,16 @@ function renderPet(root: HTMLDivElement) {
     idle: false,
   });
   let zoom = 1;
+  let suppressClick = false;
+  let dragging: {
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+    ready: boolean;
+    moved: boolean;
+  } | undefined;
 
   button.addEventListener("wheel", (event) => {
     event.preventDefault();
@@ -86,7 +97,67 @@ function renderPet(root: HTMLDivElement) {
     ball?.setEmotion(emotion);
   };
 
+  button.addEventListener("pointerdown", async (event) => {
+    if (event.button !== 0) {
+      return;
+    }
+    button.setPointerCapture(event.pointerId);
+    let position;
+    try {
+      position = await currentWindow.outerPosition();
+    } catch (error) {
+      console.error("Unable to read Goki window position", error);
+      return;
+    }
+    if (!button.hasPointerCapture(event.pointerId)) {
+      return;
+    }
+    dragging = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: position.x,
+      originY: position.y,
+      ready: true,
+      moved: false,
+    };
+  });
+  button.addEventListener("pointermove", (event) => {
+    if (!dragging?.ready || dragging.pointerId !== event.pointerId || event.buttons !== 1) {
+      return;
+    }
+    const dx = event.clientX - dragging.startX;
+    const dy = event.clientY - dragging.startY;
+    if (Math.abs(dx) + Math.abs(dy) < 2) {
+      return;
+    }
+    dragging.moved = true;
+    suppressClick = true;
+    const scale = window.devicePixelRatio || 1;
+    const nextPosition = new PhysicalPosition(
+      Math.round(dragging.originX + dx * scale),
+      Math.round(dragging.originY + dy * scale),
+    );
+    void currentWindow.setPosition(nextPosition).catch((error) => {
+      console.error("Unable to move Goki window", error);
+    });
+  });
+  const finishDragging = (event: PointerEvent) => {
+    if (dragging?.pointerId === event.pointerId) {
+      dragging = undefined;
+    }
+    if (button.hasPointerCapture(event.pointerId)) {
+      button.releasePointerCapture(event.pointerId);
+    }
+  };
+  button.addEventListener("pointerup", finishDragging);
+  button.addEventListener("pointercancel", finishDragging);
+
   button.addEventListener("click", () => {
+    if (suppressClick) {
+      suppressClick = false;
+      return;
+    }
     void invoke("show_hud");
   });
 

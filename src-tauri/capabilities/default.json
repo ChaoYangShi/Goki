@@ -3,5 +3,8 @@
   "identifier": "default",
   "description": "Goki desktop permissions",
   "windows": ["pet", "hud"],
-  "permissions": ["core:default"]
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-position"
+  ]
 }
