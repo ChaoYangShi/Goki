@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import { PhysicalPosition } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./styles.css";
 
@@ -81,10 +80,9 @@ function renderPet(root: HTMLDivElement) {
     pointerId: number;
     startX: number;
     startY: number;
-    originX: number;
-    originY: number;
     ready: boolean;
     moved: boolean;
+    nativeStarted: boolean;
   } | undefined;
 
   button.addEventListener("wheel", (event) => {
@@ -97,18 +95,11 @@ function renderPet(root: HTMLDivElement) {
     ball?.setEmotion(emotion);
   };
 
-  button.addEventListener("pointerdown", async (event) => {
+  button.addEventListener("pointerdown", (event) => {
     if (event.button !== 0) {
       return;
     }
     button.setPointerCapture(event.pointerId);
-    let position;
-    try {
-      position = await currentWindow.outerPosition();
-    } catch (error) {
-      console.error("Unable to read Goki window position", error);
-      return;
-    }
     if (!button.hasPointerCapture(event.pointerId)) {
       return;
     }
@@ -116,10 +107,9 @@ function renderPet(root: HTMLDivElement) {
       pointerId: event.pointerId,
       startX: event.clientX,
       startY: event.clientY,
-      originX: position.x,
-      originY: position.y,
       ready: true,
       moved: false,
+      nativeStarted: false,
     };
   });
   button.addEventListener("pointermove", (event) => {
@@ -133,14 +123,12 @@ function renderPet(root: HTMLDivElement) {
     }
     dragging.moved = true;
     suppressClick = true;
-    const scale = window.devicePixelRatio || 1;
-    const nextPosition = new PhysicalPosition(
-      Math.round(dragging.originX + dx * scale),
-      Math.round(dragging.originY + dy * scale),
-    );
-    void currentWindow.setPosition(nextPosition).catch((error) => {
-      console.error("Unable to move Goki window", error);
-    });
+    if (!dragging.nativeStarted) {
+      dragging.nativeStarted = true;
+      void currentWindow.startDragging().catch((error) => {
+        console.error("Unable to start native window dragging", error);
+      });
+    }
   });
   const finishDragging = (event: PointerEvent) => {
     if (dragging?.pointerId === event.pointerId) {
@@ -180,13 +168,21 @@ function renderPet(root: HTMLDivElement) {
     setEmotion("32");
     status.textContent = "处理中";
     try {
-      const results = await invoke<Array<{ message: string }>>("process_drop", { paths });
+      const results = await invoke<Array<{ message: string; path: string; kind: string }>>("process_drop", { paths });
       status.textContent = results[0]?.message ?? "已完成";
+      status.classList.add("is-visible");
+      for (const result of results) {
+        void invoke("open_path", {
+          path: result.path,
+          kind: result.kind === "extracted" ? "folder" : "file",
+        });
+      }
       shell.classList.add("is-success");
       setEmotion("33");
       window.setTimeout(() => shell.classList.remove("is-success"), 1100);
     } catch (error) {
       status.textContent = String(error);
+      status.classList.add("is-visible");
       shell.classList.add("is-error");
       setEmotion("34");
       window.setTimeout(() => shell.classList.remove("is-error"), 1400);
@@ -194,6 +190,7 @@ function renderPet(root: HTMLDivElement) {
       shell.classList.remove("is-processing");
       window.setTimeout(() => {
         status.textContent = "清醒";
+        status.classList.remove("is-visible");
         setEmotion("02");
       }, 1500);
     }

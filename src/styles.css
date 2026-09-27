@@ -81,12 +81,26 @@ button { -webkit-appearance: none; appearance: none; }
 }
 .pet-status {
   position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
+  top: calc(100% + 8px);
+  left: 50%;
+  z-index: 5;
+  width: max-content;
+  max-width: min(80vw, 360px);
+  padding: 6px 9px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 7px;
+  background: rgba(15, 18, 22, 0.92);
+  color: rgba(255, 255, 255, 0.9);
+  font-size: 10px;
+  line-height: 1.35;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -4px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+.pet-status.is-visible {
+  opacity: 1;
+  transform: translate(-50%, 0);
 }
 .pet-shell[data-state="sleep"] .pet-body {
   animation: breathe 3.8s ease-in-out infinite;

@@ -235,7 +235,7 @@ fn process_drop_path(path: PathBuf) -> Result<OperationResult, String> {
         return Err("当前版本暂不支持 7z，先支持 zip 文件".to_owned());
     }
 
-    Err(format!("暂不处理该类型: {}", path.display()))
+    Err(format!("只支持文件夹压缩和 ZIP 解压: {}", path.display()))
 }
 
 fn desktop_dir() -> PathBuf {

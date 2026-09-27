@@ -5,6 +5,7 @@
   "windows": ["pet", "hud"],
   "permissions": [
     "core:default",
-    "core:window:allow-set-position"
+    "core:window:allow-set-position",
+    "core:window:allow-start-dragging"
   ]
 }
