@@ -9,6 +9,9 @@ type SearchResult = {
   kind: "file" | "folder";
 };
 
+const RECENT_FILES_KEY = "goki.recent-files";
+const MAX_RECENT_FILES = 8;
+
 type DragPayload = {
   paths?: string[];
 };
@@ -172,9 +175,13 @@ function renderPet(root: HTMLDivElement) {
       status.textContent = results[0]?.message ?? "已完成";
       status.classList.add("is-visible");
       for (const result of results) {
-        void invoke("open_path", {
-          path: result.path,
-          kind: result.kind === "extracted" ? "folder" : "file",
+        const kind = result.kind === "extracted" ? "folder" : "file";
+        void invoke("open_path", { path: result.path, kind }).then(() => {
+          rememberRecent({
+            name: result.path.split(/[\\/]/).pop() ?? result.path,
+            path: result.path,
+            kind,
+          });
         });
       }
       shell.classList.add("is-success");
@@ -254,17 +261,29 @@ function renderHud(root: HTMLDivElement) {
   let debounceTimer: number | undefined;
   let searchGeneration = 0;
 
+  const showRecent = () => {
+    currentResults = readRecent();
+    selectedIndex = 0;
+    meta.textContent = currentResults.length ? "最近打开" : "暂无最近打开的文件";
+    paintResults();
+  };
+
   const hide = async () => {
     await invoke("hide_hud");
   };
 
-  const openSelected = () => {
+  const openSelected = async () => {
     const result = currentResults[selectedIndex];
     if (!result) {
       return;
     }
-    void invoke("open_path", { path: result.path, kind: result.kind });
-    void hide();
+    try {
+      await invoke("open_path", { path: result.path, kind: result.kind });
+      rememberRecent(result);
+      await hide();
+    } catch (error) {
+      meta.textContent = String(error);
+    }
   };
 
   const paintResults = () => {
@@ -292,9 +311,7 @@ function renderHud(root: HTMLDivElement) {
   const search = async () => {
     const query = input.value.trim();
     if (!query) {
-      currentResults = [];
-      meta.textContent = "输入文件名开始搜索";
-      paintResults();
+      showRecent();
       return;
     }
     meta.textContent = "正在搜索...";
@@ -347,11 +364,36 @@ function renderHud(root: HTMLDivElement) {
   void listen("global-hotkey", () => {
     input.focus();
     input.select();
+    showRecent();
   });
   void listen("hud-opened", () => {
     input.focus();
     input.select();
+    showRecent();
   });
+}
+
+function readRecent(): SearchResult[] {
+  try {
+    const stored: unknown = JSON.parse(localStorage.getItem(RECENT_FILES_KEY) ?? "[]");
+    if (!Array.isArray(stored)) return [];
+    return stored.filter((item): item is SearchResult =>
+      item && typeof item.name === "string" && typeof item.path === "string" &&
+      (item.kind === "file" || item.kind === "folder"),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function rememberRecent(result: SearchResult) {
+  const next = [result, ...readRecent().filter((item) => item.path !== result.path)]
+    .slice(0, MAX_RECENT_FILES);
+  try {
+    localStorage.setItem(RECENT_FILES_KEY, JSON.stringify(next));
+  } catch {
+    // Storage can be unavailable in restricted webview contexts.
+  }
 }
 
 function escapeHtml(value: string) {
