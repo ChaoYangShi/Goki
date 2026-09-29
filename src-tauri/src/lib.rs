@@ -12,7 +12,11 @@ use global_hotkey::{
 };
 use serde::Serialize;
 use sysinfo::System;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WindowEvent};
+use tauri::{
+    menu::{MenuBuilder, MenuItemBuilder},
+    tray::TrayIconBuilder,
+    AppHandle, Emitter, Manager, PhysicalPosition, WindowEvent,
+};
 #[cfg(not(target_os = "macos"))]
 use walkdir::WalkDir;
 use zip::{read::ZipArchive, write::FileOptions, CompressionMethod, ZipWriter};
@@ -456,6 +460,22 @@ fn place_pet(app: &tauri::App) {
 pub fn run() {
     tauri::Builder::default()
         .setup(|app| {
+            let quit = MenuItemBuilder::with_id("quit", "退出 Goki").build(app)?;
+            let menu = MenuBuilder::new(app).items(&[&quit]).build()?;
+            TrayIconBuilder::new()
+                .icon(
+                    app.default_window_icon()
+                        .cloned()
+                        .ok_or("Goki 默认图标不可用")?,
+                )
+                .menu(&menu)
+                .tooltip("Goki")
+                .on_menu_event(|app, event| {
+                    if event.id.as_ref() == "quit" {
+                        app.exit(0);
+                    }
+                })
+                .build(app)?;
             place_pet(app);
             install_global_hotkey(app).map_err(|error| error.to_string())?;
             Ok(())
