@@ -13,8 +13,11 @@ Goki 是一个跨平台桌面悬浮助手。它使用 Tauri 2、Rust 和 TypeScr
 - 在 Bot 上滚动鼠标缩放表情球
 - 将文件夹拖到 Bot 上压缩为 ZIP
 - 将 ZIP 拖到 Bot 上解压到桌面
+- 通过系统托盘菜单退出 Goki
 - 根据 CPU 使用率切换睡眠、待机、专注和过载表情
 - 拖拽、处理中、成功和错误状态表情反馈
+
+拖放处理目前支持文件夹压缩为 ZIP，以及 ZIP 文件解压到桌面；其他压缩格式（例如 7z）暂不支持。
 
 ## 平台支持
 
@@ -102,6 +105,7 @@ Windows 和 Linux 的输出目录分别位于 `src-tauri/target/release/bundle/`
 - 搜索窗口中使用 `Up` / `Down` 选择，`Enter` 打开，`Esc` 关闭
 - 将文件夹拖到 Bot：生成桌面 ZIP
 - 将 ZIP 拖到 Bot：解压到桌面
+- 右键系统托盘图标，选择“退出 Goki”：退出应用
 
 Bot 的睡眠表情会在 CPU 使用率低于 10% 时出现。它不会因为长时间闲置自动睡眠。
 
@@ -116,7 +120,9 @@ Bot 的睡眠表情会在 CPU 使用率低于 10% 时出现。它不会因为长
 │   ├── grok-ball.js  # Grok Ball SVG 表情引擎
 │   └── THIRD_PARTY_NOTICES.md
 ├── src-tauri/
-│   ├── src/lib.rs    # 搜索、压缩、解压和平台适配
+│   ├── src/main.rs   # Rust 应用入口
+│   ├── src/lib.rs    # 搜索、压缩、解压、托盘和平台适配
+│   ├── Cargo.toml
 │   ├── tauri.conf.json
 │   └── capabilities/
 ├── index.html
