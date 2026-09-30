@@ -1,49 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { Menu } from "@tauri-apps/api/menu";
-import { save } from "@tauri-apps/plugin-dialog";
 import "./styles.css";
-
-type SearchResult = {
-  name: string;
-  path: string;
-  kind: "file" | "folder";
-};
-
-const RECENT_FILES_KEY = "goki.recent-files";
-const MAX_RECENT_FILES = 8;
-
-type DragPayload = {
-  paths?: string[];
-};
-
-type GrokBallEngine = {
-  setEmotion: (id: string, options?: { auto?: boolean }) => boolean;
-  setGaze: (x: number, y: number) => GrokBallEngine;
-  clearGaze: () => GrokBallEngine;
-  bounce: () => GrokBallEngine;
-  burst: (count?: number) => GrokBallEngine;
-  spin: (turns?: number, direction?: -1 | 1) => GrokBallEngine;
-};
-
-declare global {
-  interface Window {
-    GrokBall?: {
-      create: (
-        target: Element,
-        options?: {
-          emotion?: string;
-          color?: string;
-          eyeColor?: string;
-          shape?: "blob" | "wedge" | "gem";
-          label?: string;
-          idle?: boolean;
-        },
-      ) => GrokBallEngine;
-    };
-  }
-}
+import type { DragPayload, SearchResult } from "./types";
+import { readRecent, rememberRecent } from "./recent";
+import { escapeHtml } from "./ui-utils";
+import { bindPetButtonEvents } from "./pet-button-events";
+import { bindHudEvents } from "./hud-events";
+import { RemoteController } from "./remote-controller";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
@@ -81,100 +45,10 @@ function renderPet(root: HTMLDivElement) {
     label: "Goki",
     idle: false,
   });
-  let zoom = 1;
-  let suppressClick = false;
-  let dragging: {
-    pointerId: number;
-    startX: number;
-    startY: number;
-    ready: boolean;
-    moved: boolean;
-    nativeStarted: boolean;
-  } | undefined;
-
-  button.addEventListener("wheel", (event) => {
-    event.preventDefault();
-    zoom = Math.min(1.55, Math.max(0.65, zoom + (event.deltaY < 0 ? 0.08 : -0.08)));
-    ballMount.style.transform = `scale(${zoom})`;
-  }, { passive: false });
-
   const setEmotion = (emotion: string) => {
     ball?.setEmotion(emotion);
   };
-
-  button.addEventListener("pointerdown", (event) => {
-    if (event.button !== 0) {
-      return;
-    }
-    button.setPointerCapture(event.pointerId);
-    if (!button.hasPointerCapture(event.pointerId)) {
-      return;
-    }
-    dragging = {
-      pointerId: event.pointerId,
-      startX: event.clientX,
-      startY: event.clientY,
-      ready: true,
-      moved: false,
-      nativeStarted: false,
-    };
-  });
-  button.addEventListener("pointermove", (event) => {
-    if (!dragging?.ready || dragging.pointerId !== event.pointerId || event.buttons !== 1) {
-      return;
-    }
-    const dx = event.clientX - dragging.startX;
-    const dy = event.clientY - dragging.startY;
-    if (Math.abs(dx) + Math.abs(dy) < 2) {
-      return;
-    }
-    dragging.moved = true;
-    suppressClick = true;
-    if (!dragging.nativeStarted) {
-      dragging.nativeStarted = true;
-      void currentWindow.startDragging().catch((error) => {
-        console.error("Unable to start native window dragging", error);
-      });
-    }
-  });
-  const finishDragging = (event: PointerEvent) => {
-    if (dragging?.pointerId === event.pointerId) {
-      dragging = undefined;
-    }
-    if (button.hasPointerCapture(event.pointerId)) {
-      button.releasePointerCapture(event.pointerId);
-    }
-  };
-  button.addEventListener("pointerup", finishDragging);
-  button.addEventListener("pointercancel", finishDragging);
-
-  button.addEventListener("click", () => {
-    if (suppressClick) {
-      suppressClick = false;
-      return;
-    }
-    void invoke("show_hud");
-  });
-  let sshMenu: Menu | undefined;
-  button.addEventListener("contextmenu", (event) => {
-    event.preventDefault();
-    void (async () => {
-      try {
-        sshMenu ??= await Menu.new({
-          items: [{
-            id: "ssh-connect",
-            text: "SSH 连接",
-            action: () => void invoke("show_remote_window_command"),
-          }],
-        });
-        await sshMenu.popup(undefined, currentWindow);
-      } catch (error) {
-        console.error("Unable to show SSH menu", error);
-        status.textContent = String(error);
-        status.classList.add("is-visible");
-      }
-    })();
-  });
+  bindPetButtonEvents({ button, ballMount, status });
 
   void listen<DragPayload>("tauri://drag-over", () => {
     shell.classList.add("is-dragging");
@@ -282,7 +156,6 @@ function renderHud(root: HTMLDivElement) {
   const meta = root.querySelector<HTMLDivElement>("#result-meta")!;
   let currentResults: SearchResult[] = [];
   let selectedIndex = 0;
-  let debounceTimer: number | undefined;
   let searchGeneration = 0;
 
   const showRecent = () => {
@@ -358,73 +231,18 @@ function renderHud(root: HTMLDivElement) {
     }
   };
 
-  input.addEventListener("input", () => {
-    window.clearTimeout(debounceTimer);
-    debounceTimer = window.setTimeout(() => void search(), 160);
-  });
-  input.addEventListener("keydown", (event) => {
-    if (event.key === "Escape") {
-      event.preventDefault();
-      void hide();
-    } else if (event.key === "ArrowDown") {
-      event.preventDefault();
-      selectedIndex = Math.min(selectedIndex + 1, currentResults.length - 1);
-      paintResults();
-    } else if (event.key === "ArrowUp") {
-      event.preventDefault();
-      selectedIndex = Math.max(selectedIndex - 1, 0);
-      paintResults();
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      openSelected();
-    }
-  });
-
-  shell.addEventListener("click", (event) => {
-    if (event.target === shell) {
-      void hide();
-    }
-  });
-  void listen("global-hotkey", () => {
-    input.focus();
-    input.select();
-    showRecent();
-  });
-  void listen("hud-opened", () => {
-    input.focus();
-    input.select();
-    showRecent();
+  bindHudEvents({
+    shell,
+    input,
+    paintResults,
+    search,
+    showRecent,
+    openSelected,
+    getResults: () => currentResults,
+    getSelectedIndex: () => selectedIndex,
+    setSelectedIndex: (index) => { selectedIndex = index; },
   });
 }
-
-type RemoteEntry = {
-  name: string;
-  path: string;
-  kind: "file" | "folder";
-  size: number;
-  modified?: number;
-};
-
-type SshPrepare = {
-  attemptId: string;
-  host: string;
-  port: number;
-  username: string;
-  fingerprint: string;
-  authMethods: string[];
-  trusted: boolean;
-};
-
-type SftpTransferEvent = {
-  kind?: "upload" | "download";
-  status?: string;
-  path?: string;
-  paths?: string[];
-  transferredBytes?: number;
-  totalBytes?: number;
-  error?: string;
-  failures?: string[];
-};
 
 function renderRemote(root: HTMLDivElement) {
   root.innerHTML = `
@@ -470,308 +288,5 @@ function renderRemote(root: HTMLDivElement) {
     </main>
   `;
 
-  const connectSection = root.querySelector<HTMLElement>("#remote-connect")!;
-  const explorer = root.querySelector<HTMLElement>("#remote-explorer")!;
-  const form = root.querySelector<HTMLFormElement>("#ssh-form")!;
-  const targetInput = root.querySelector<HTMLInputElement>("#ssh-target")!;
-  const passwordForm = root.querySelector<HTMLFormElement>("#ssh-password-form")!;
-  const passwordInput = root.querySelector<HTMLInputElement>("#ssh-password")!;
-  const trustBox = root.querySelector<HTMLElement>("#ssh-trust")!;
-  const fingerprint = root.querySelector<HTMLElement>("#ssh-fingerprint")!;
-  const trustButton = root.querySelector<HTMLButtonElement>("#ssh-trust-button")!;
-  const status = root.querySelector<HTMLElement>("#ssh-status")!;
-  const remoteStatus = root.querySelector<HTMLElement>("#remote-status")!;
-  const transferStatus = root.querySelector<HTMLElement>("#remote-transfer")!;
-  const list = root.querySelector<HTMLElement>("#remote-list")!;
-  const pathLabel = root.querySelector<HTMLElement>("#remote-path")!;
-  const connectionLabel = root.querySelector<HTMLElement>("#remote-connection-label")!;
-  const disconnect = root.querySelector<HTMLButtonElement>("#remote-disconnect")!;
-  const up = root.querySelector<HTMLButtonElement>("#remote-up")!;
-  const refresh = root.querySelector<HTMLButtonElement>("#remote-refresh")!;
-  const newDir = root.querySelector<HTMLButtonElement>("#remote-new-dir")!;
-  const rename = root.querySelector<HTMLButtonElement>("#remote-rename")!;
-  const remove = root.querySelector<HTMLButtonElement>("#remote-delete")!;
-  let attempt: SshPrepare | undefined;
-  let sessionId: string | undefined;
-  let currentPath = "/";
-  let loadingDirectory = false;
-  let selectedEntry: { path: string; name: string; kind: "file" | "folder" } | undefined;
-  const activeDownloads = new Set<string>();
-
-  const showError = (message: unknown) => {
-    status.textContent = String(message);
-    remoteStatus.textContent = String(message);
-  };
-
-  const loadDirectory = async (path: string) => {
-    if (!sessionId || loadingDirectory) return;
-    loadingDirectory = true;
-    up.disabled = true;
-    refresh.disabled = true;
-    remoteStatus.textContent = "正在读取目录...";
-    try {
-      const entries = await invoke<RemoteEntry[]>("ssh_list", { sessionId, path });
-      currentPath = path;
-      selectedEntry = undefined;
-      pathLabel.textContent = path;
-      list.innerHTML = entries.length ? entries.map((entry) => `
-        <div class="remote-entry ${entry.kind}" data-path="${escapeHtml(entry.path)}" data-kind="${entry.kind}" role="option" tabindex="0" aria-label="${escapeHtml(entry.name)}">
-          <span class="remote-entry-icon">${entry.kind === "folder" ? "▸" : "•"}</span>
-          <span class="remote-entry-name">${escapeHtml(entry.name)}</span>
-          <small>${entry.kind === "folder" ? "文件夹" : formatBytes(entry.size)}</small>
-          ${entry.kind === "file" ? `<button class="remote-entry-action" type="button" title="下载 ${escapeHtml(entry.name)}" aria-label="下载 ${escapeHtml(entry.name)}">↓</button>` : ""}
-        </div>`).join("") : `<div class="remote-empty">此目录为空</div>`;
-      list.querySelectorAll<HTMLElement>(".remote-entry").forEach((entry) => {
-        const activate = () => {
-          entry.focus();
-          list.querySelectorAll(".remote-entry.is-selected").forEach((item) => item.classList.remove("is-selected"));
-          entry.classList.add("is-selected");
-          selectedEntry = {
-            path: entry.dataset.path!,
-            name: entry.querySelector<HTMLElement>(".remote-entry-name")?.textContent ?? "",
-            kind: entry.dataset.kind as "file" | "folder",
-          };
-        };
-        entry.addEventListener("click", (event) => {
-          if ((event.target as HTMLElement).closest(".remote-entry-action")) return;
-          activate();
-        });
-        entry.addEventListener("dblclick", () => {
-          const entryPath = entry.dataset.path!;
-          if (entry.dataset.kind === "folder") void loadDirectory(entryPath);
-          else void download(entryPath);
-        });
-        entry.addEventListener("keydown", (event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            const entryPath = entry.dataset.path!;
-            if (event.key === "Enter" && entry.dataset.kind === "folder") void loadDirectory(entryPath);
-            else if (event.key === "Enter") void download(entryPath);
-            else activate();
-          }
-        });
-        entry.querySelector<HTMLButtonElement>(".remote-entry-action")?.addEventListener("click", (event) => {
-          event.stopPropagation();
-          void download(entry.dataset.path!);
-        });
-      });
-      remoteStatus.textContent = `${entries.length} 个项目`;
-    } catch (error) {
-      remoteStatus.textContent = String(error);
-    } finally {
-      loadingDirectory = false;
-      refresh.disabled = false;
-      up.disabled = currentPath === "/";
-    }
-  };
-
-  const download = async (path: string) => {
-    if (!sessionId || activeDownloads.has(path)) return;
-    activeDownloads.add(path);
-    remoteStatus.textContent = "正在下载...";
-    transferStatus.hidden = false;
-    transferStatus.textContent = `准备下载 ${path.split("/").filter(Boolean).pop() ?? "文件"}`;
-    try {
-      const fileName = path.split("/").filter(Boolean).pop() ?? "download";
-      const selectedPath = await save({
-        defaultPath: fileName,
-        title: "选择下载位置",
-      });
-      if (!selectedPath) {
-        remoteStatus.textContent = "已取消下载";
-        return;
-      }
-      const localPath = await invoke<string>("ssh_download", { sessionId, remotePath: path, localPath: selectedPath });
-      remoteStatus.textContent = `已下载到 ${localPath}`;
-    } catch (error) {
-      remoteStatus.textContent = String(error);
-    } finally {
-      activeDownloads.delete(path);
-    }
-  };
-
-  form.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    status.textContent = "正在等待远端响应...";
-    try {
-      attempt = await invoke<SshPrepare>("ssh_prepare", { target: targetInput.value });
-      fingerprint.textContent = `SHA256:${attempt.fingerprint}`;
-      trustBox.hidden = attempt.trusted;
-      passwordForm.hidden = !attempt.trusted;
-      status.textContent = attempt.trusted ? "主机已信任，请输入密码" : "请确认主机指纹后继续";
-      if (attempt.trusted) passwordInput.focus();
-    } catch (error) {
-      showError(error);
-    }
-  });
-
-  trustButton.addEventListener("click", async () => {
-    if (!attempt) return;
-    try {
-      await invoke("ssh_trust", { attemptId: attempt.attemptId });
-      trustBox.hidden = true;
-      passwordForm.hidden = false;
-      status.textContent = "主机已信任，请输入密码";
-      passwordInput.focus();
-    } catch (error) {
-      showError(error);
-    }
-  });
-
-  passwordForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    if (!attempt) return;
-    status.textContent = "正在认证...";
-    try {
-      const result = await invoke<{ sessionId: string; host: string; cwd: string }>("ssh_authenticate", {
-        attemptId: attempt.attemptId,
-        password: passwordInput.value,
-      });
-      passwordInput.value = "";
-      sessionId = result.sessionId;
-      currentPath = result.cwd;
-      connectionLabel.textContent = `${attempt.username}@${result.host}`;
-      connectSection.hidden = true;
-      explorer.hidden = false;
-      disconnect.hidden = false;
-      await loadDirectory(currentPath);
-    } catch (error) {
-      passwordInput.value = "";
-      showError(error);
-    }
-  });
-
-  const closeSession = async () => {
-    if (sessionId) await invoke("ssh_disconnect", { sessionId }).catch(() => undefined);
-    sessionId = undefined;
-    attempt = undefined;
-    explorer.hidden = true;
-    connectSection.hidden = false;
-    disconnect.hidden = true;
-    connectionLabel.textContent = "未连接";
-    status.textContent = "已断开连接";
-  };
-  disconnect.addEventListener("click", () => void closeSession());
-  refresh.addEventListener("click", () => void loadDirectory(currentPath));
-  newDir.addEventListener("click", async () => {
-    if (!sessionId) return;
-    const name = window.prompt("新建远程目录名称");
-    if (!name?.trim()) return;
-    try {
-      await invoke("ssh_mkdir", { sessionId, path: remoteJoinPath(currentPath, name.trim()) });
-      await loadDirectory(currentPath);
-    } catch (error) { remoteStatus.textContent = String(error); }
-  });
-  rename.addEventListener("click", async () => {
-    if (!sessionId || !selectedEntry) return;
-    const name = window.prompt("输入新名称", selectedEntry.name);
-    if (!name?.trim() || name.trim() === selectedEntry.name) return;
-    try {
-      await invoke("ssh_rename", { sessionId, from: selectedEntry.path, to: remoteJoinPath(currentPath, name.trim()) });
-      await loadDirectory(currentPath);
-    } catch (error) { remoteStatus.textContent = String(error); }
-  });
-  remove.addEventListener("click", async () => {
-    if (!sessionId || !selectedEntry) return;
-    if (!window.confirm(`确认删除 ${selectedEntry.name}？空目录可以删除，非空目录会失败。`)) return;
-    try {
-      await invoke("ssh_delete", { sessionId, path: selectedEntry.path });
-      await loadDirectory(currentPath);
-    } catch (error) { remoteStatus.textContent = String(error); }
-  });
-  up.addEventListener("click", () => {
-    if (currentPath === "/") return;
-    const parent = currentPath.replace(/\/+$/, "").split("/").slice(0, -1).join("/") || "/";
-    void loadDirectory(parent);
-  });
-
-  void listen<SftpTransferEvent>("sftp-transfer", (event) => {
-    const payload = event.payload ?? {};
-    const transferred = payload.transferredBytes;
-    const total = payload.totalBytes;
-    const progress = typeof transferred === "number" && typeof total === "number" && total > 0
-      ? ` (${Math.round(transferred / total * 100)}%)`
-      : "";
-    transferStatus.hidden = false;
-    if (payload.error || payload.status === "error" || payload.status === "failed") {
-      transferStatus.textContent = `${payload.kind === "upload" ? "上传" : "下载"}失败：${payload.error ?? "未知错误"}`;
-    } else if (payload.status === "completed") {
-      const failedCount = payload.failures?.length ?? 0;
-      transferStatus.textContent = payload.kind === "upload"
-        ? `上传完成${failedCount ? `，失败 ${failedCount} 个` : ""}`
-        : `下载完成${payload.path ? `：${payload.path}` : ""}`;
-    } else {
-      transferStatus.textContent = `${payload.kind === "upload" ? "上传中" : "下载中"}${progress}`;
-    }
-  });
-
-  void listen<DragPayload>("tauri://drag-over", () => root.classList.add("is-dragging"));
-  void listen("tauri://drag-leave", () => root.classList.remove("is-dragging"));
-  void listen<DragPayload>("tauri://drag-drop", async (event) => {
-    root.classList.remove("is-dragging");
-    if (!sessionId || !(event.payload.paths?.length)) return;
-    remoteStatus.textContent = "正在上传...";
-    transferStatus.hidden = false;
-    transferStatus.textContent = `正在处理 ${event.payload.paths.length} 个项目...`;
-    try {
-      const uploaded = await invoke<string[]>("ssh_upload", { sessionId, localPaths: event.payload.paths, remoteDir: currentPath });
-      const skipped = event.payload.paths.length - uploaded.length;
-      remoteStatus.textContent = skipped > 0
-        ? `已上传 ${uploaded.length} 个文件，跳过 ${skipped} 个目录或无效项目`
-        : `已上传 ${uploaded.length} 个文件`;
-      transferStatus.textContent = remoteStatus.textContent;
-      await loadDirectory(currentPath);
-    } catch (error) {
-      remoteStatus.textContent = String(error);
-    }
-  });
-}
-
-function remoteJoinPath(directory: string, name: string) {
-  const base = directory.trim().replace(/\/+$/, "") || "/";
-  return base === "/" ? `/${name}` : `${base}/${name}`;
-}
-
-function formatBytes(value: number) {
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
-  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
-  return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
-}
-
-function readRecent(): SearchResult[] {
-  try {
-    const stored: unknown = JSON.parse(localStorage.getItem(RECENT_FILES_KEY) ?? "[]");
-    if (!Array.isArray(stored)) return [];
-    return stored.filter((item): item is SearchResult =>
-      item && typeof item.name === "string" && typeof item.path === "string" &&
-      (item.kind === "file" || item.kind === "folder"),
-    );
-  } catch {
-    return [];
-  }
-}
-
-function rememberRecent(result: SearchResult) {
-  const next = [result, ...readRecent().filter((item) => item.path !== result.path)]
-    .slice(0, MAX_RECENT_FILES);
-  try {
-    localStorage.setItem(RECENT_FILES_KEY, JSON.stringify(next));
-  } catch {
-    // Storage can be unavailable in restricted webview contexts.
-  }
-}
-
-function escapeHtml(value: string) {
-  return value.replace(
-    /[&<>"']/g,
-    (character) =>
-      ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#039;",
-      })[character]!,
-  );
+  new RemoteController(root).mount();
 }
