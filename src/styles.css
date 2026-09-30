@@ -6,6 +6,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html, body, #app {
   width: 100%;
   height: 100%;
@@ -350,7 +351,15 @@ kbd {
 .remote-icon-button { width: 30px; height: 30px; padding: 0; font-size: 18px; }
 .remote-button:hover,
 .remote-icon-button:hover { background: rgba(73, 196, 218, 0.25); }
+.remote-button:disabled,
+.remote-icon-button:disabled { opacity: 0.45; cursor: wait; }
 .remote-status { min-height: 18px; padding-top: 14px; }
+.remote-transfer {
+  min-height: 18px;
+  padding: 5px 16px 12px;
+  color: #9debf5;
+  font-size: 12px;
+}
 .ssh-trust {
   display: grid;
   gap: 10px;
@@ -368,7 +377,7 @@ kbd {
 .remote-entry {
   display: grid;
   width: 100%;
-  grid-template-columns: 25px 1fr max-content;
+  grid-template-columns: 25px 1fr max-content 30px;
   gap: 8px;
   align-items: center;
   padding: 10px 12px;
@@ -380,8 +389,20 @@ kbd {
   cursor: pointer;
 }
 .remote-entry:hover { background: rgba(91, 214, 237, 0.12); }
+.remote-entry:focus-visible,
+.remote-entry.is-selected { outline: 1px solid rgba(132, 238, 251, 0.65); background: rgba(91, 214, 237, 0.16); }
 .remote-entry-icon { color: #84e9f8; text-align: center; }
 .remote-entry-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .remote-entry small { color: rgba(207, 241, 245, 0.43); }
+.remote-entry-action {
+  width: 28px;
+  height: 26px;
+  border: 1px solid rgba(132, 238, 251, 0.32);
+  border-radius: 5px;
+  color: #eafcff;
+  background: rgba(73, 196, 218, 0.1);
+  cursor: pointer;
+}
+.remote-entry-action:hover { background: rgba(73, 196, 218, 0.3); }
 .remote-empty { padding: 28px; text-align: center; }
 .remote-shell.is-dragging .remote-panel { border-color: #ffd36e; box-shadow: 0 0 28px rgba(255, 178, 64, 0.24); }

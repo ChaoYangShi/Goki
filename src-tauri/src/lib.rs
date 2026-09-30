@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Mutex,
     thread,
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use global_hotkey::{
@@ -48,11 +48,13 @@ struct PendingSsh {
     host: String,
     port: u16,
     fingerprint: String,
+    created_at: Instant,
 }
 
 struct ActiveSsh {
     session: Session,
     cwd: String,
+    last_used: Instant,
 }
 
 #[derive(Default)]
@@ -60,6 +62,53 @@ struct SshState {
     pending: Mutex<HashMap<String, PendingSsh>>,
     sessions: Mutex<HashMap<String, ActiveSsh>>,
     trusted: Mutex<HashSet<String>>,
+    trusted_loaded: Mutex<bool>,
+}
+
+fn trusted_hosts_path() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join("goki").join("known_hosts.json"))
+}
+
+fn load_trusted_hosts(state: &SshState) {
+    let Ok(mut loaded) = state.trusted_loaded.lock() else {
+        return;
+    };
+    if *loaded {
+        return;
+    }
+    if let Some(path) = trusted_hosts_path() {
+        if let Ok(contents) = fs::read_to_string(path) {
+            if let Ok(entries) = serde_json::from_str::<Vec<String>>(&contents) {
+                if let Ok(mut trusted) = state.trusted.lock() {
+                    trusted.extend(entries);
+                }
+            }
+        }
+    }
+    *loaded = true;
+}
+
+fn save_trusted_hosts(state: &SshState) -> Result<(), String> {
+    let Some(path) = trusted_hosts_path() else {
+        return Ok(());
+    };
+    let entries = state
+        .trusted
+        .lock()
+        .map_err(|_| "SSH 状态锁定失败")?
+        .iter()
+        .cloned()
+        .collect::<Vec<_>>();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(io_error)?;
+    }
+    let temp = path.with_extension("json.tmp");
+    fs::write(
+        &temp,
+        serde_json::to_vec_pretty(&entries).map_err(io_error)?,
+    )
+    .map_err(io_error)?;
+    fs::rename(temp, path).map_err(io_error)
 }
 
 #[derive(Clone, Serialize)]
@@ -99,6 +148,22 @@ fn new_id(prefix: &str) -> String {
         .unwrap_or_default()
         .as_nanos();
     format!("{prefix}-{now:x}")
+}
+
+const PENDING_SSH_TTL: Duration = Duration::from_secs(5 * 60);
+const ACTIVE_SSH_TTL: Duration = Duration::from_secs(24 * 60 * 60);
+
+fn ssh_trust_key(host: &str, port: u16, fingerprint: &str) -> String {
+    format!("{host}:{port}:{fingerprint}")
+}
+
+fn cleanup_ssh_state(state: &SshState) {
+    if let Ok(mut pending) = state.pending.lock() {
+        pending.retain(|_, attempt| attempt.created_at.elapsed() < PENDING_SSH_TTL);
+    }
+    if let Ok(mut sessions) = state.sessions.lock() {
+        sessions.retain(|_, session| session.last_used.elapsed() < ACTIVE_SSH_TTL);
+    }
 }
 
 fn parse_ssh_target(target: &str) -> Result<(String, String, u16), String> {
@@ -147,6 +212,8 @@ fn remote_join(directory: &str, name: &str) -> String {
 
 #[tauri::command]
 fn ssh_prepare(target: String, state: State<'_, SshState>) -> Result<SshPrepareResult, String> {
+    cleanup_ssh_state(&state);
+    load_trusted_hosts(&state);
     let (username, host, port) = parse_ssh_target(&target)?;
     let mut addresses = (host.as_str(), port)
         .to_socket_addrs()
@@ -174,7 +241,7 @@ fn ssh_prepare(target: String, state: State<'_, SshState>) -> Result<SshPrepareR
         .trusted
         .lock()
         .map_err(|_| "SSH 状态锁定失败")?
-        .contains(&fingerprint);
+        .contains(&ssh_trust_key(&host, port, &fingerprint));
     let auth_methods = session
         .auth_methods(&username)
         .map_err(io_error)?
@@ -195,6 +262,7 @@ fn ssh_prepare(target: String, state: State<'_, SshState>) -> Result<SshPrepareR
                 host: host.clone(),
                 port,
                 fingerprint: fingerprint.clone(),
+                created_at: Instant::now(),
             },
         );
     Ok(SshPrepareResult {
@@ -210,6 +278,8 @@ fn ssh_prepare(target: String, state: State<'_, SshState>) -> Result<SshPrepareR
 
 #[tauri::command]
 fn ssh_trust(attempt_id: String, state: State<'_, SshState>) -> Result<(), String> {
+    cleanup_ssh_state(&state);
+    load_trusted_hosts(&state);
     let pending = state.pending.lock().map_err(|_| "SSH 状态锁定失败")?;
     let attempt = pending
         .get(&attempt_id)
@@ -218,7 +288,12 @@ fn ssh_trust(attempt_id: String, state: State<'_, SshState>) -> Result<(), Strin
         .trusted
         .lock()
         .map_err(|_| "SSH 状态锁定失败")?
-        .insert(attempt.fingerprint.clone());
+        .insert(ssh_trust_key(
+            &attempt.host,
+            attempt.port,
+            &attempt.fingerprint,
+        ));
+    save_trusted_hosts(&state)?;
     Ok(())
 }
 
@@ -228,6 +303,7 @@ fn ssh_authenticate(
     password: String,
     state: State<'_, SshState>,
 ) -> Result<SshAuthResult, String> {
+    cleanup_ssh_state(&state);
     let mut pending = state.pending.lock().map_err(|_| "SSH 状态锁定失败")?;
     let attempt = pending
         .remove(&attempt_id)
@@ -236,7 +312,11 @@ fn ssh_authenticate(
         .trusted
         .lock()
         .map_err(|_| "SSH 状态锁定失败")?
-        .contains(&attempt.fingerprint);
+        .contains(&ssh_trust_key(
+            &attempt.host,
+            attempt.port,
+            &attempt.fingerprint,
+        ));
     if !trusted {
         pending.insert(attempt_id, attempt);
         return Err("请先确认远端主机指纹".to_owned());
@@ -247,6 +327,7 @@ fn ssh_authenticate(
         host,
         port,
         fingerprint,
+        ..
     } = attempt;
     if let Err(error) = session.userauth_password(&username, &password) {
         pending.insert(
@@ -257,6 +338,7 @@ fn ssh_authenticate(
                 host,
                 port,
                 fingerprint,
+                created_at: Instant::now(),
             },
         );
         return Err(format!("密码认证失败: {error}"));
@@ -281,7 +363,14 @@ fn ssh_authenticate(
         .sessions
         .lock()
         .map_err(|_| "SSH 状态锁定失败")?
-        .insert(session_id, ActiveSsh { session, cwd });
+        .insert(
+            session_id,
+            ActiveSsh {
+                session,
+                cwd,
+                last_used: Instant::now(),
+            },
+        );
     Ok(result)
 }
 
@@ -291,10 +380,12 @@ fn ssh_list(
     path: String,
     state: State<'_, SshState>,
 ) -> Result<Vec<RemoteEntry>, String> {
-    let sessions = state.sessions.lock().map_err(|_| "SSH 状态锁定失败")?;
+    cleanup_ssh_state(&state);
+    let mut sessions = state.sessions.lock().map_err(|_| "SSH 状态锁定失败")?;
     let active = sessions
-        .get(&session_id)
+        .get_mut(&session_id)
         .ok_or_else(|| "SSH 会话不存在".to_owned())?;
+    active.last_used = Instant::now();
     let sftp = active.session.sftp().map_err(io_error)?;
     let directory = if path.trim().is_empty() {
         active.cwd.as_str()
@@ -336,10 +427,15 @@ fn ssh_download(
     app: AppHandle,
     state: State<'_, SshState>,
 ) -> Result<String, String> {
-    let sessions = state.sessions.lock().map_err(|_| "SSH 状态锁定失败")?;
+    cleanup_ssh_state(&state);
+    if remote_path.trim().is_empty() || remote_path.contains('\0') {
+        return Err("remote file path is invalid".to_owned());
+    }
+    let mut sessions = state.sessions.lock().map_err(|_| "SSH 状态锁定失败")?;
     let active = sessions
-        .get(&session_id)
+        .get_mut(&session_id)
         .ok_or_else(|| "SSH 会话不存在".to_owned())?;
+    active.last_used = Instant::now();
     let sftp = active.session.sftp().map_err(io_error)?;
     let mut source = sftp.open(Path::new(&remote_path)).map_err(io_error)?;
     let file_name = remote_path
@@ -347,7 +443,7 @@ fn ssh_download(
         .next()
         .filter(|name| !name.is_empty())
         .unwrap_or("download");
-    let destination = if local_path.trim().is_empty() {
+    let mut destination = if local_path.trim().is_empty() {
         unique_file(
             &dirs::download_dir()
                 .or_else(dirs::home_dir)
@@ -357,13 +453,23 @@ fn ssh_download(
     } else {
         PathBuf::from(&local_path)
     };
+    if destination.exists() {
+        destination = unique_file(&destination);
+    }
     if let Some(parent) = destination.parent() {
         fs::create_dir_all(parent).map_err(io_error)?;
     }
     let temporary = destination.with_extension(format!("goki-part-{}", new_id("download")));
     let mut output = File::create(&temporary).map_err(io_error)?;
-    io::copy(&mut source, &mut output).map_err(io_error)?;
-    fs::rename(&temporary, &destination).map_err(io_error)?;
+    if let Err(error) = io::copy(&mut source, &mut output).map_err(io_error) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    drop(output);
+    if let Err(error) = fs::rename(&temporary, &destination).map_err(io_error) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
     let destination_string = destination.to_string_lossy().into_owned();
     let _ = app.emit_to("remote", "sftp-transfer", serde_json::json!({ "kind": "download", "path": destination_string, "status": "completed" }));
     Ok(destination.to_string_lossy().into_owned())
@@ -377,15 +483,22 @@ fn ssh_upload(
     app: AppHandle,
     state: State<'_, SshState>,
 ) -> Result<Vec<String>, String> {
-    let sessions = state.sessions.lock().map_err(|_| "SSH 状态锁定失败")?;
+    cleanup_ssh_state(&state);
+    if remote_dir.contains('\0') {
+        return Err("remote directory path is invalid".to_owned());
+    }
+    let mut sessions = state.sessions.lock().map_err(|_| "SSH 状态锁定失败")?;
     let active = sessions
-        .get(&session_id)
+        .get_mut(&session_id)
         .ok_or_else(|| "SSH 会话不存在".to_owned())?;
+    active.last_used = Instant::now();
     let sftp = active.session.sftp().map_err(io_error)?;
     let mut uploaded = Vec::new();
+    let mut failures = Vec::new();
     for local in local_paths {
         let source_path = PathBuf::from(&local);
         if !source_path.is_file() {
+            failures.push(format!("{local}: not a regular file"));
             continue;
         }
         let name = source_path
@@ -393,15 +506,31 @@ fn ssh_upload(
             .and_then(|value| value.to_str())
             .ok_or_else(|| "无法读取本地文件名".to_owned())?;
         let remote_path = remote_join(&remote_dir, name);
-        let mut input = File::open(&source_path).map_err(io_error)?;
-        let mut output = sftp.create(Path::new(&remote_path)).map_err(io_error)?;
-        io::copy(&mut input, &mut output).map_err(io_error)?;
+        if sftp.stat(Path::new(&remote_path)).is_ok() {
+            failures.push(format!("{remote_path}: remote file already exists"));
+            continue;
+        }
+        let temporary = format!("{remote_path}.goki-part-{}", new_id("upload"));
+        let result = (|| -> Result<(), String> {
+            let mut input = File::open(&source_path).map_err(io_error)?;
+            {
+                let mut output = sftp.create(Path::new(&temporary)).map_err(io_error)?;
+                io::copy(&mut input, &mut output).map_err(io_error)?;
+            }
+            sftp.rename(Path::new(&temporary), Path::new(&remote_path), None)
+                .map_err(io_error)
+        })();
+        if let Err(error) = result {
+            let _ = sftp.unlink(Path::new(&temporary));
+            failures.push(format!("{remote_path}: {error}"));
+            continue;
+        }
         uploaded.push(remote_path);
     }
     let _ = app.emit_to(
         "remote",
         "sftp-transfer",
-        serde_json::json!({ "kind": "upload", "paths": uploaded, "status": "completed" }),
+        serde_json::json!({ "kind": "upload", "paths": uploaded, "failures": failures, "status": "completed" }),
     );
     Ok(uploaded)
 }
@@ -414,6 +543,63 @@ fn ssh_disconnect(session_id: String, state: State<'_, SshState>) -> Result<(), 
         .map_err(|_| "SSH 状态锁定失败")?
         .remove(&session_id);
     Ok(())
+}
+
+#[tauri::command]
+fn ssh_mkdir(session_id: String, path: String, state: State<'_, SshState>) -> Result<(), String> {
+    if path.trim().is_empty() || path.contains('\0') {
+        return Err("remote directory path is invalid".to_owned());
+    }
+    let mut sessions = state.sessions.lock().map_err(|_| "SSH 状态锁定失败")?;
+    let active = sessions
+        .get_mut(&session_id)
+        .ok_or_else(|| "SSH 会话不存在".to_owned())?;
+    active.last_used = Instant::now();
+    let sftp = active.session.sftp().map_err(io_error)?;
+    sftp.mkdir(Path::new(&path), 0o755).map_err(io_error)
+}
+
+#[tauri::command]
+fn ssh_rename(
+    session_id: String,
+    from: String,
+    to: String,
+    state: State<'_, SshState>,
+) -> Result<(), String> {
+    if from.trim().is_empty() || to.trim().is_empty() || from.contains('\0') || to.contains('\0') {
+        return Err("remote path is invalid".to_owned());
+    }
+    let mut sessions = state.sessions.lock().map_err(|_| "SSH 状态锁定失败")?;
+    let active = sessions
+        .get_mut(&session_id)
+        .ok_or_else(|| "SSH 会话不存在".to_owned())?;
+    active.last_used = Instant::now();
+    let sftp = active.session.sftp().map_err(io_error)?;
+    sftp.rename(Path::new(&from), Path::new(&to), None)
+        .map_err(io_error)
+}
+
+#[tauri::command]
+fn ssh_delete(session_id: String, path: String, state: State<'_, SshState>) -> Result<(), String> {
+    if path.trim().is_empty() || path == "/" || path.contains('\0') {
+        return Err("remote path is invalid".to_owned());
+    }
+    let mut sessions = state.sessions.lock().map_err(|_| "SSH 状态锁定失败")?;
+    let active = sessions
+        .get_mut(&session_id)
+        .ok_or_else(|| "SSH 会话不存在".to_owned())?;
+    active.last_used = Instant::now();
+    let sftp = active.session.sftp().map_err(io_error)?;
+    let stat = sftp.stat(Path::new(&path)).map_err(io_error)?;
+    let is_dir = stat
+        .perm
+        .map(|permissions| permissions & 0o170000 == 0o040000)
+        .unwrap_or(false);
+    if is_dir {
+        sftp.rmdir(Path::new(&path)).map_err(io_error)
+    } else {
+        sftp.unlink(Path::new(&path)).map_err(io_error)
+    }
 }
 
 #[tauri::command]
@@ -919,6 +1105,9 @@ pub fn run() {
             ssh_download,
             ssh_upload,
             ssh_disconnect,
+            ssh_mkdir,
+            ssh_rename,
+            ssh_delete,
             show_ssh_menu,
             show_remote_window_command,
             show_hud,
@@ -927,4 +1116,58 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Goki");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{parse_ssh_target, remote_join};
+
+    #[test]
+    fn parses_default_port() {
+        assert_eq!(
+            parse_ssh_target("alice@example.com").unwrap(),
+            ("alice".to_owned(), "example.com".to_owned(), 22)
+        );
+    }
+
+    #[test]
+    fn parses_custom_port() {
+        assert_eq!(
+            parse_ssh_target("deploy@example.com:2222").unwrap(),
+            ("deploy".to_owned(), "example.com".to_owned(), 2222)
+        );
+    }
+
+    #[test]
+    fn parses_bracketed_ipv6() {
+        assert_eq!(
+            parse_ssh_target("root@[2001:db8::10]:2200").unwrap(),
+            ("root".to_owned(), "2001:db8::10".to_owned(), 2200)
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_targets() {
+        for target in [
+            "example.com",
+            "@example.com",
+            "alice@",
+            "alice@example.com:0",
+        ] {
+            assert!(
+                parse_ssh_target(target).is_err(),
+                "target should fail: {target}"
+            );
+        }
+    }
+
+    #[test]
+    fn joins_remote_paths_without_duplicate_slashes() {
+        assert_eq!(remote_join("/", "notes.txt"), "/notes.txt");
+        assert_eq!(
+            remote_join("/home/alice/", "notes.txt"),
+            "/home/alice/notes.txt"
+        );
+        assert_eq!(remote_join("", "notes.txt"), "/notes.txt");
+    }
 }

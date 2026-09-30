@@ -1,23 +1,36 @@
 # Goki
 
-Goki 是一个跨平台桌面悬浮助手。它使用 Tauri 2、Rust 和 TypeScript 构建，运行时显示一个无嘴巴的 Grok 风格表情球，可用于快速搜索文件、处理压缩包和反馈当前系统状态。
+Goki 是一个基于 Tauri 2、Rust 和 TypeScript 的跨平台桌面悬浮助手。它提供文件搜索、文件夹压缩/解压、系统托盘以及 SSH/SFTP 远程文件浏览功能。
 
 ## 功能
 
-- 始终置顶的透明悬浮 Bot 窗口
-- 点击 Bot 打开文件搜索 HUD
-- 使用全局快捷键打开搜索 HUD
-- 键盘上下选择搜索结果，Enter 打开结果
-- 根据操作系统使用原生文件管理器打开文件或文件夹
-- 拖动 Bot 移动悬浮窗口
-- 在 Bot 上滚动鼠标缩放表情球
-- 将文件夹拖到 Bot 上压缩为 ZIP
-- 将 ZIP 拖到 Bot 上解压到桌面
-- 通过系统托盘菜单退出 Goki
-- 根据 CPU 使用率切换睡眠、待机、专注和过载表情
-- 拖拽、处理中、成功和错误状态表情反馈
+- 悬浮球、全局快捷键和键盘操作
+- 本地文件搜索，并通过系统文件管理器打开结果
+- 将文件夹拖到悬浮球压缩为 ZIP，将 ZIP 拖入后解压到桌面
+- SSH/SFTP 连接、远程目录浏览、文件下载和拖拽上传
+- 主机指纹确认，避免首次连接时无提示信任远端主机
+- 系统托盘退出和 CPU 状态表情反馈
 
-拖放处理目前支持文件夹压缩为 ZIP，以及 ZIP 文件解压到桌面；其他压缩格式（例如 7z）暂不支持。
+## SSH 使用
+
+1. 从搜索 HUD 或托盘菜单打开 **SSH 连接**。
+2. 输入 `user@host`，也可以指定端口，例如 `deploy@example.com:2222`。
+3. 首次连接时核对显示的主机指纹，确认无误后点击“信任并继续”。
+4. 输入密码完成登录。登录成功后可以浏览远程目录。
+5. 单击条目选中，双击文件夹进入目录，双击文件下载；也可以使用行末下载按钮。
+6. 使用工具栏按钮新建目录、重命名或删除选中项。将本地文件拖入远程文件列表，可上传到当前目录。
+
+支持 IPv6 地址格式，例如 `user@[2001:db8::10]:22`。连接窗口关闭不会退出 Goki；使用“断开”按钮释放当前 SSH 会话。
+
+### SSH 当前限制
+
+- 当前认证方式为密码认证，暂不支持私钥、SSH Agent、`~/.ssh/config` 或 ProxyJump。
+- 主机信任信息保存在应用配置目录的 `known_hosts.json` 中；如果远端指纹变化，需要重新确认。
+- 上传和下载暂不提供进度、取消、断点续传或并发任务列表。
+- 远程目录列表和传输操作仍是同步执行的，大文件或高延迟连接可能暂时影响窗口响应。
+- 远程文件上传不会递归处理目录；同名远程文件不会覆盖，会报告为失败。
+- 删除操作只删除文件或空目录，非空目录需要先清理内容。
+- 仅支持远程文件浏览和 SFTP 传输，不包含远程 Shell 终端。
 
 ## 平台支持
 
@@ -27,115 +40,62 @@ Goki 是一个跨平台桌面悬浮助手。它使用 Tauri 2、Rust 和 TypeScr
 | macOS | `Command + Shift + Space` | Finder |
 | Linux | `Ctrl + Shift + Space` | 系统默认文件管理器 |
 
-搜索行为也会根据平台适配。macOS 使用 Spotlight `mdfind`，避免应用递归读取受保护的用户目录；Windows 和 Linux 从当前用户主目录搜索。
+macOS 使用 Spotlight (`mdfind`) 搜索；Windows 和 Linux 默认扫描当前用户主目录。
 
 ## 环境要求
 
 - Node.js 20 或更高版本
-- Rust stable 工具链
-- Tauri 2 对应的平台依赖
+- Rust stable 工具链和 Cargo
+- Tauri 2 所需的系统依赖
+- macOS 需要 Xcode Command Line Tools
 
-macOS 需要安装 Xcode Command Line Tools：
-
-```bash
-xcode-select --install
-```
-
-安装 Rust：
-
-```bash
-brew install rustup
-export PATH="/opt/homebrew/opt/rustup/bin:$PATH"
-rustup toolchain install stable
-rustup default stable
-```
-
-## 开发运行
-
-在项目根目录执行：
+## 开发与测试
 
 ```bash
 npm install
 npm run tauri dev
 ```
 
-只运行前端构建检查：
+仅构建前端：
 
 ```bash
 npm run build
 ```
 
-运行 Rust 检查：
+检查和测试 Rust 代码：
 
 ```bash
 cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo check --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
-## 构建应用
+构建发行包：
 
 ```bash
 npm run tauri build
 ```
 
-必须在目标操作系统上构建对应的原生应用包。macOS 的应用通常位于：
-
-```text
-src-tauri/target/release/bundle/macos/Goki.app
-```
-
-Windows 和 Linux 的输出目录分别位于 `src-tauri/target/release/bundle/` 下对应的平台目录。
-
-## macOS 权限
-
-首次运行 macOS 版本时，如果全局快捷键没有响应，请在：
-
-系统设置 → 隐私与安全性 → 输入监控
-
-中允许 Goki 访问键盘输入。
-
-项目启用了 Tauri 的 macOS 透明窗口支持，因此需要重新启动 `npm run tauri dev` 才能加载透明窗口配置的修改。
-
-## 使用说明
-
-- 点击 Bot：打开搜索窗口
-- 按住 Bot 并移动鼠标：拖动悬浮窗口
-- 在 Bot 上滚动鼠标：放大或缩小 Bot
-- `Command/Ctrl + Shift + Space`：打开搜索窗口
-- 搜索窗口中使用 `Up` / `Down` 选择，`Enter` 打开，`Esc` 关闭
-- 将文件夹拖到 Bot：生成桌面 ZIP
-- 将 ZIP 拖到 Bot：解压到桌面
-- 右键系统托盘图标，选择“退出 Goki”：退出应用
-
-Bot 的睡眠表情会在 CPU 使用率低于 10% 时出现。它不会因为长时间闲置自动睡眠。
+SSH 的集成验证需要一台可访问的 SSH/SFTP 服务器。建议覆盖密码错误、主机指纹变化、IPv4/IPv6、无权限目录、中文文件名、同名文件以及大文件传输等场景。
 
 ## 项目结构
 
 ```text
 .
 ├── src/
-│   ├── main.ts       # 宠物窗口、搜索 HUD 和交互逻辑
-│   └── styles.css    # 窗口和 HUD 样式
+│   ├── main.ts       # 悬浮球、搜索 HUD 和 SSH 远程窗口
+│   └── styles.css    # 窗口样式
 ├── public/
-│   ├── grok-ball.js  # Grok Ball SVG 表情引擎
-│   └── THIRD_PARTY_NOTICES.md
 ├── src-tauri/
-│   ├── src/main.rs   # Rust 应用入口
-│   ├── src/lib.rs    # 搜索、压缩、解压、托盘和平台适配
+│   ├── src/main.rs   # Tauri 入口
+│   ├── src/lib.rs    # 搜索、压缩、SSH/SFTP、托盘和平台适配
 │   ├── Cargo.toml
-│   ├── tauri.conf.json
-│   └── capabilities/
-├── index.html
-├── package.json
-└── vite.config.ts
+│   └── tauri.conf.json
+└── package.json
 ```
 
 ## 第三方许可
 
-`public/grok-ball.js` 来自 [TyCoding/grok-ball](https://github.com/TyCoding/grok-ball)，该项目使用 MIT License。它是受 Grok Orb 启发的独立实现，与 xAI 没有官方关联。
+`public/grok-ball.js` 来自 [TyCoding/grok-ball](https://github.com/TyCoding/grok-ball)，使用 MIT License。完整声明见 [public/THIRD_PARTY_NOTICES.md](public/THIRD_PARTY_NOTICES.md)。
 
-完整署名和许可文本见 [public/THIRD_PARTY_NOTICES.md](public/THIRD_PARTY_NOTICES.md)。
-
-## 许可证
-
-Goki 项目本身尚未单独声明开源许可证。发布或分发前，请根据项目实际用途补充许可证文件，并同时保留第三方依赖的许可和署名信息。
+Goki 项目本身尚未单独声明开源许可证。发布或分发前，请补充项目许可证并保留第三方依赖的版权和许可证信息。

@@ -415,6 +415,17 @@ type SshPrepare = {
   trusted: boolean;
 };
 
+type SftpTransferEvent = {
+  kind?: "upload" | "download";
+  status?: string;
+  path?: string;
+  paths?: string[];
+  transferredBytes?: number;
+  totalBytes?: number;
+  error?: string;
+  failures?: string[];
+};
+
 function renderRemote(root: HTMLDivElement) {
   root.innerHTML = `
     <main class="remote-shell">
@@ -446,10 +457,14 @@ function renderRemote(root: HTMLDivElement) {
           <div class="remote-toolbar">
             <button class="remote-icon-button" id="remote-up" title="返回上级目录" type="button">↑</button>
             <code id="remote-path">/</code>
+            <button class="remote-icon-button" id="remote-new-dir" title="新建目录" type="button">＋</button>
+            <button class="remote-icon-button" id="remote-rename" title="重命名选中项" type="button">✎</button>
+            <button class="remote-icon-button" id="remote-delete" title="删除选中项" type="button">×</button>
             <button class="remote-icon-button" id="remote-refresh" title="刷新目录" type="button">↻</button>
           </div>
-          <div class="remote-list" id="remote-list"></div>
+          <div class="remote-list" id="remote-list" role="listbox" aria-label="远程文件"></div>
           <div class="remote-status" id="remote-status">就绪</div>
+          <div class="remote-transfer" id="remote-transfer" aria-live="polite" hidden></div>
         </section>
       </section>
     </main>
@@ -466,15 +481,22 @@ function renderRemote(root: HTMLDivElement) {
   const trustButton = root.querySelector<HTMLButtonElement>("#ssh-trust-button")!;
   const status = root.querySelector<HTMLElement>("#ssh-status")!;
   const remoteStatus = root.querySelector<HTMLElement>("#remote-status")!;
+  const transferStatus = root.querySelector<HTMLElement>("#remote-transfer")!;
   const list = root.querySelector<HTMLElement>("#remote-list")!;
   const pathLabel = root.querySelector<HTMLElement>("#remote-path")!;
   const connectionLabel = root.querySelector<HTMLElement>("#remote-connection-label")!;
   const disconnect = root.querySelector<HTMLButtonElement>("#remote-disconnect")!;
   const up = root.querySelector<HTMLButtonElement>("#remote-up")!;
   const refresh = root.querySelector<HTMLButtonElement>("#remote-refresh")!;
+  const newDir = root.querySelector<HTMLButtonElement>("#remote-new-dir")!;
+  const rename = root.querySelector<HTMLButtonElement>("#remote-rename")!;
+  const remove = root.querySelector<HTMLButtonElement>("#remote-delete")!;
   let attempt: SshPrepare | undefined;
   let sessionId: string | undefined;
   let currentPath = "/";
+  let loadingDirectory = false;
+  let selectedEntry: { path: string; name: string; kind: "file" | "folder" } | undefined;
+  const activeDownloads = new Set<string>();
 
   const showError = (message: unknown) => {
     status.textContent = String(message);
@@ -482,37 +504,73 @@ function renderRemote(root: HTMLDivElement) {
   };
 
   const loadDirectory = async (path: string) => {
-    if (!sessionId) return;
+    if (!sessionId || loadingDirectory) return;
+    loadingDirectory = true;
+    up.disabled = true;
+    refresh.disabled = true;
     remoteStatus.textContent = "正在读取目录...";
     try {
       const entries = await invoke<RemoteEntry[]>("ssh_list", { sessionId, path });
       currentPath = path;
+      selectedEntry = undefined;
       pathLabel.textContent = path;
       list.innerHTML = entries.length ? entries.map((entry) => `
-        <button class="remote-entry ${entry.kind}" data-path="${escapeHtml(entry.path)}" data-kind="${entry.kind}" type="button">
+        <div class="remote-entry ${entry.kind}" data-path="${escapeHtml(entry.path)}" data-kind="${entry.kind}" role="option" tabindex="0" aria-label="${escapeHtml(entry.name)}">
           <span class="remote-entry-icon">${entry.kind === "folder" ? "▸" : "•"}</span>
           <span class="remote-entry-name">${escapeHtml(entry.name)}</span>
           <small>${entry.kind === "folder" ? "文件夹" : formatBytes(entry.size)}</small>
-        </button>`).join("") : `<div class="remote-empty">此目录为空</div>`;
-      list.querySelectorAll<HTMLButtonElement>(".remote-entry").forEach((entry) => {
-        entry.addEventListener("click", () => {
-          const path = entry.dataset.path!;
-          if (entry.dataset.kind === "folder") void loadDirectory(path);
+          ${entry.kind === "file" ? `<button class="remote-entry-action" type="button" title="下载 ${escapeHtml(entry.name)}" aria-label="下载 ${escapeHtml(entry.name)}">↓</button>` : ""}
+        </div>`).join("") : `<div class="remote-empty">此目录为空</div>`;
+      list.querySelectorAll<HTMLElement>(".remote-entry").forEach((entry) => {
+        const activate = () => {
+          entry.focus();
+          list.querySelectorAll(".remote-entry.is-selected").forEach((item) => item.classList.remove("is-selected"));
+          entry.classList.add("is-selected");
+          selectedEntry = {
+            path: entry.dataset.path!,
+            name: entry.querySelector<HTMLElement>(".remote-entry-name")?.textContent ?? "",
+            kind: entry.dataset.kind as "file" | "folder",
+          };
+        };
+        entry.addEventListener("click", (event) => {
+          if ((event.target as HTMLElement).closest(".remote-entry-action")) return;
+          activate();
         });
-        entry.addEventListener("contextmenu", (event) => {
-          event.preventDefault();
-          if (entry.dataset.kind === "file") void download(entry.dataset.path!);
+        entry.addEventListener("dblclick", () => {
+          const entryPath = entry.dataset.path!;
+          if (entry.dataset.kind === "folder") void loadDirectory(entryPath);
+          else void download(entryPath);
+        });
+        entry.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            const entryPath = entry.dataset.path!;
+            if (event.key === "Enter" && entry.dataset.kind === "folder") void loadDirectory(entryPath);
+            else if (event.key === "Enter") void download(entryPath);
+            else activate();
+          }
+        });
+        entry.querySelector<HTMLButtonElement>(".remote-entry-action")?.addEventListener("click", (event) => {
+          event.stopPropagation();
+          void download(entry.dataset.path!);
         });
       });
       remoteStatus.textContent = `${entries.length} 个项目`;
     } catch (error) {
       remoteStatus.textContent = String(error);
+    } finally {
+      loadingDirectory = false;
+      refresh.disabled = false;
+      up.disabled = currentPath === "/";
     }
   };
 
   const download = async (path: string) => {
-    if (!sessionId) return;
+    if (!sessionId || activeDownloads.has(path)) return;
+    activeDownloads.add(path);
     remoteStatus.textContent = "正在下载...";
+    transferStatus.hidden = false;
+    transferStatus.textContent = `准备下载 ${path.split("/").filter(Boolean).pop() ?? "文件"}`;
     try {
       const fileName = path.split("/").filter(Boolean).pop() ?? "download";
       const selectedPath = await save({
@@ -527,6 +585,8 @@ function renderRemote(root: HTMLDivElement) {
       remoteStatus.textContent = `已下载到 ${localPath}`;
     } catch (error) {
       remoteStatus.textContent = String(error);
+    } finally {
+      activeDownloads.delete(path);
     }
   };
 
@@ -593,10 +653,56 @@ function renderRemote(root: HTMLDivElement) {
   };
   disconnect.addEventListener("click", () => void closeSession());
   refresh.addEventListener("click", () => void loadDirectory(currentPath));
+  newDir.addEventListener("click", async () => {
+    if (!sessionId) return;
+    const name = window.prompt("新建远程目录名称");
+    if (!name?.trim()) return;
+    try {
+      await invoke("ssh_mkdir", { sessionId, path: remoteJoinPath(currentPath, name.trim()) });
+      await loadDirectory(currentPath);
+    } catch (error) { remoteStatus.textContent = String(error); }
+  });
+  rename.addEventListener("click", async () => {
+    if (!sessionId || !selectedEntry) return;
+    const name = window.prompt("输入新名称", selectedEntry.name);
+    if (!name?.trim() || name.trim() === selectedEntry.name) return;
+    try {
+      await invoke("ssh_rename", { sessionId, from: selectedEntry.path, to: remoteJoinPath(currentPath, name.trim()) });
+      await loadDirectory(currentPath);
+    } catch (error) { remoteStatus.textContent = String(error); }
+  });
+  remove.addEventListener("click", async () => {
+    if (!sessionId || !selectedEntry) return;
+    if (!window.confirm(`确认删除 ${selectedEntry.name}？空目录可以删除，非空目录会失败。`)) return;
+    try {
+      await invoke("ssh_delete", { sessionId, path: selectedEntry.path });
+      await loadDirectory(currentPath);
+    } catch (error) { remoteStatus.textContent = String(error); }
+  });
   up.addEventListener("click", () => {
     if (currentPath === "/") return;
     const parent = currentPath.replace(/\/+$/, "").split("/").slice(0, -1).join("/") || "/";
     void loadDirectory(parent);
+  });
+
+  void listen<SftpTransferEvent>("sftp-transfer", (event) => {
+    const payload = event.payload ?? {};
+    const transferred = payload.transferredBytes;
+    const total = payload.totalBytes;
+    const progress = typeof transferred === "number" && typeof total === "number" && total > 0
+      ? ` (${Math.round(transferred / total * 100)}%)`
+      : "";
+    transferStatus.hidden = false;
+    if (payload.error || payload.status === "error" || payload.status === "failed") {
+      transferStatus.textContent = `${payload.kind === "upload" ? "上传" : "下载"}失败：${payload.error ?? "未知错误"}`;
+    } else if (payload.status === "completed") {
+      const failedCount = payload.failures?.length ?? 0;
+      transferStatus.textContent = payload.kind === "upload"
+        ? `上传完成${failedCount ? `，失败 ${failedCount} 个` : ""}`
+        : `下载完成${payload.path ? `：${payload.path}` : ""}`;
+    } else {
+      transferStatus.textContent = `${payload.kind === "upload" ? "上传中" : "下载中"}${progress}`;
+    }
   });
 
   void listen<DragPayload>("tauri://drag-over", () => root.classList.add("is-dragging"));
@@ -605,14 +711,25 @@ function renderRemote(root: HTMLDivElement) {
     root.classList.remove("is-dragging");
     if (!sessionId || !(event.payload.paths?.length)) return;
     remoteStatus.textContent = "正在上传...";
+    transferStatus.hidden = false;
+    transferStatus.textContent = `正在处理 ${event.payload.paths.length} 个项目...`;
     try {
       const uploaded = await invoke<string[]>("ssh_upload", { sessionId, localPaths: event.payload.paths, remoteDir: currentPath });
-      remoteStatus.textContent = `已上传 ${uploaded.length} 个文件`;
+      const skipped = event.payload.paths.length - uploaded.length;
+      remoteStatus.textContent = skipped > 0
+        ? `已上传 ${uploaded.length} 个文件，跳过 ${skipped} 个目录或无效项目`
+        : `已上传 ${uploaded.length} 个文件`;
+      transferStatus.textContent = remoteStatus.textContent;
       await loadDirectory(currentPath);
     } catch (error) {
       remoteStatus.textContent = String(error);
     }
   });
+}
+
+function remoteJoinPath(directory: string, name: string) {
+  const base = directory.trim().replace(/\/+$/, "") || "/";
+  return base === "/" ? `/${name}` : `${base}/${name}`;
 }
 
 function formatBytes(value: number) {
