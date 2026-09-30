@@ -1539,6 +1539,14 @@ window.EMOTION_SEED = [
     get emotionId() { return this._def ? this._def.id : null; },
     get touring() { return this._touring; },
 
+    setTheme: function (color, eyeColor) {
+      this._theme = color
+        ? { body: color, eyes: eyeColor || '#FFFFFF' }
+        : null;
+      if (this._def) this.setEmotion(this._def.id, { auto: true });
+      return this;
+    },
+
     /* ---------- 核心：切换表情（含兜底） ---------- */
     setEmotion: function (id, o) {
       o = o || {};

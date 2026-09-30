@@ -48,6 +48,18 @@
         "resizable": true,
         "skipTaskbar": false,
         "shadow": true
+      },
+      {
+        "label": "settings",
+        "title": "Goki 设置",
+        "width": 520,
+        "height": 430,
+        "minWidth": 420,
+        "minHeight": 360,
+        "visible": false,
+        "resizable": false,
+        "skipTaskbar": false,
+        "shadow": true
       }
     ],
     "security": {

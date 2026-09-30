@@ -607,8 +607,11 @@ fn show_ssh_menu(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
     let connect = MenuItemBuilder::with_id("ssh-connect", "SSH 连接")
         .build(&app)
         .map_err(io_error)?;
+    let settings = MenuItemBuilder::with_id("settings", "外观设置")
+        .build(&app)
+        .map_err(io_error)?;
     let menu = MenuBuilder::new(&app)
-        .items(&[&connect])
+        .items(&[&connect, &settings])
         .build()
         .map_err(io_error)?;
     window.popup_menu(&menu).map_err(io_error)
@@ -632,6 +635,35 @@ fn show_remote_window(app: &AppHandle) -> Result<(), String> {
 #[tauri::command]
 fn show_remote_window_command(app: AppHandle) -> Result<(), String> {
     show_remote_window(&app)
+}
+
+fn show_settings_window(app: &AppHandle) -> Result<(), String> {
+    let window = match app.get_webview_window("settings") {
+        Some(window) => window,
+        None => WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("index.html".into()))
+            .title("Goki 设置")
+            .inner_size(520.0, 430.0)
+            .min_inner_size(420.0, 360.0)
+            .resizable(false)
+            .build()
+            .map_err(io_error)?,
+    };
+    window.center().map_err(io_error)?;
+    window.show().map_err(io_error)?;
+    window.set_focus().map_err(io_error)
+}
+
+#[tauri::command]
+fn show_settings(app: AppHandle) -> Result<(), String> {
+    show_settings_window(&app)
+}
+
+#[tauri::command]
+fn hide_settings(app: AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("settings") {
+        window.hide().map_err(io_error)?;
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1059,8 +1091,14 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(SshState::default())
         .on_menu_event(|app, event| {
-            if event.id.as_ref() == "ssh-connect" {
-                let _ = show_remote_window(app);
+            match event.id.as_ref() {
+                "ssh-connect" => {
+                    let _ = show_remote_window(app);
+                }
+                "settings" => {
+                    let _ = show_settings_window(app);
+                }
+                _ => {}
             }
         })
         .setup(|app| {
@@ -1085,7 +1123,7 @@ pub fn run() {
             Ok(())
         })
         .on_window_event(|window, event| match (window.label(), event) {
-            ("hud" | "remote", WindowEvent::CloseRequested { api, .. }) => {
+            ("hud" | "remote" | "settings", WindowEvent::CloseRequested { api, .. }) => {
                 api.prevent_close();
                 let _ = window.hide();
             }
@@ -1110,6 +1148,8 @@ pub fn run() {
             ssh_delete,
             show_ssh_menu,
             show_remote_window_command,
+            show_settings,
+            hide_settings,
             show_hud,
             hide_hud,
             open_path

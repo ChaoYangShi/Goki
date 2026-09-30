@@ -10,6 +10,7 @@ export type DragPayload = {
 
 export type GrokBallEngine = {
   setEmotion: (id: string, options?: { auto?: boolean }) => boolean;
+  setTheme: (color: string, eyeColor: string) => GrokBallEngine;
   setGaze: (x: number, y: number) => GrokBallEngine;
   clearGaze: () => GrokBallEngine;
   bounce: () => GrokBallEngine;

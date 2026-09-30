@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { Menu } from "@tauri-apps/api/menu";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type DragState = {
@@ -73,24 +72,12 @@ export function bindPetButtonEvents({ button, ballMount, status }: PetButtonCont
     void invoke("show_hud");
   });
 
-  let sshMenu: Menu | undefined;
   button.addEventListener("contextmenu", (event) => {
     event.preventDefault();
-    void (async () => {
-      try {
-        sshMenu ??= await Menu.new({
-          items: [{
-            id: "ssh-connect",
-            text: "SSH 连接",
-            action: () => void invoke("show_remote_window_command"),
-          }],
-        });
-        await sshMenu.popup(undefined, currentWindow);
-      } catch (error) {
-        console.error("Unable to show SSH menu", error);
-        status.textContent = String(error);
-        status.classList.add("is-visible");
-      }
-    })();
+    void invoke("show_ssh_menu").catch((error) => {
+      console.error("Unable to show SSH menu", error);
+      status.textContent = String(error);
+      status.classList.add("is-visible");
+    });
   });
 }

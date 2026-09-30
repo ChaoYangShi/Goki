@@ -8,17 +8,24 @@ import { escapeHtml } from "./ui-utils";
 import { bindPetButtonEvents } from "./pet-button-events";
 import { bindHudEvents } from "./hud-events";
 import { RemoteController } from "./remote-controller";
+import { renderSettings } from "./settings-view";
+import { applyTheme, readTheme, type ThemeSettings } from "./theme";
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) {
   throw new Error("Goki root element is missing");
 }
 
+applyTheme(readTheme());
+void listen<ThemeSettings>("theme-changed", (event) => applyTheme(event.payload));
+
 const currentWindow = getCurrentWindow();
 if (currentWindow.label === "hud") {
   renderHud(app);
 } else if (currentWindow.label === "remote") {
   renderRemote(app);
+} else if (currentWindow.label === "settings") {
+  renderSettings(app);
 } else {
   renderPet(app);
 }
@@ -37,13 +44,18 @@ function renderPet(root: HTMLDivElement) {
   const button = root.querySelector<HTMLButtonElement>("#pet-button")!;
   const status = root.querySelector<HTMLElement>("#pet-status")!;
   const ballMount = root.querySelector<HTMLElement>("#pet-ball")!;
+  const theme = readTheme();
   const ball = window.GrokBall?.create(ballMount, {
     emotion: "02",
-    color: "#15191d",
-    eyeColor: "#f4f4f4",
+    color: theme.petColor,
+    eyeColor: theme.eyeColor,
     shape: "blob",
     label: "Goki",
     idle: false,
+  });
+  void listen<ThemeSettings>("theme-changed", (event) => {
+    applyTheme(event.payload);
+    ball?.setTheme(event.payload.petColor, event.payload.eyeColor);
   });
   const setEmotion = (emotion: string) => {
     ball?.setEmotion(emotion);

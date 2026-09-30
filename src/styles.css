@@ -1,4 +1,7 @@
 :root {
+  --accent: #84eefb;
+  --pet-color: #15191d;
+  --eye-color: #f4f4f4;
   color: #ecfbff;
   font-family: "Segoe UI", "Microsoft YaHei", sans-serif;
   font-synthesis: none;
@@ -48,7 +51,7 @@ button { -webkit-appearance: none; appearance: none; }
   overflow: hidden;
   border: 1px solid rgba(159, 235, 255, 0.7);
   border-radius: 28px;
-  background: rgba(7, 16, 23, 0.92);
+  background: var(--pet-color);
   box-shadow: inset 0 0 24px rgba(42, 183, 218, 0.08), 0 0 18px rgba(48, 186, 222, 0.33);
   transform: rotate(-2deg);
   transition: border-color 220ms ease, box-shadow 220ms ease, transform 220ms ease;
@@ -65,8 +68,8 @@ button { -webkit-appearance: none; appearance: none; }
   width: 9px;
   height: 30px;
   border-radius: 999px;
-  background: #9ff7ff;
-  box-shadow: 0 0 9px #67ecff;
+  background: var(--eye-color);
+  box-shadow: 0 0 9px var(--accent);
   transition: all 180ms ease;
 }
 .pet-liquid {
@@ -202,7 +205,7 @@ button { -webkit-appearance: none; appearance: none; }
   border-bottom: 1px solid rgba(147, 229, 241, 0.15);
 }
 .search-icon {
-  color: #84eefb;
+  color: var(--accent);
   font-size: 28px;
   line-height: 1;
 }
@@ -248,7 +251,7 @@ kbd {
 .result-item.is-selected { background: rgba(91, 214, 237, 0.12); }
 .result-kind {
   width: 22px;
-  color: #84e9f8;
+  color: var(--accent);
   font-size: 16px;
   text-align: center;
 }
@@ -338,7 +341,7 @@ kbd {
   color: #eafcff;
   background: rgba(0, 0, 0, 0.2);
 }
-.remote-connect input:focus { border-color: #84eefb; }
+.remote-connect input:focus { border-color: var(--accent); }
 .remote-button,
 .remote-icon-button {
   border: 1px solid rgba(132, 238, 251, 0.35);
@@ -406,3 +409,31 @@ kbd {
 .remote-entry-action:hover { background: rgba(73, 196, 218, 0.3); }
 .remote-empty { padding: 28px; text-align: center; }
 .remote-shell.is-dragging .remote-panel { border-color: #ffd36e; box-shadow: 0 0 28px rgba(255, 178, 64, 0.24); }
+
+.settings-shell {
+  width: 100%;
+  height: 100%;
+  padding: 24px;
+  color: #eafcff;
+  background: #071016;
+}
+.settings-panel {
+  width: min(100%, 460px);
+  margin: 0 auto;
+  padding: 20px;
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: rgba(12, 24, 31, 0.98);
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.4);
+}
+.settings-header { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.settings-header > div { display: grid; gap: 4px; flex: 1; }
+.settings-header span { color: rgba(207, 241, 245, 0.55); font-size: 12px; }
+.settings-close { border: 0; color: inherit; background: transparent; cursor: pointer; font-size: 24px; }
+.settings-form { display: grid; gap: 14px; }
+.settings-field { display: flex; align-items: center; justify-content: space-between; color: rgba(207, 241, 245, 0.8); font-size: 13px; }
+.settings-form input[type="color"] { width: 54px; height: 32px; padding: 2px; border: 1px solid rgba(159, 235, 255, 0.3); border-radius: 6px; background: transparent; cursor: pointer; }
+.settings-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 10px; }
+.settings-actions button { padding: 8px 14px; border: 1px solid rgba(159, 235, 255, 0.25); border-radius: 7px; color: inherit; background: rgba(255, 255, 255, 0.06); cursor: pointer; }
+.settings-actions .settings-primary { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.settings-status { min-height: 18px; color: rgba(207, 241, 245, 0.62); font-size: 12px; }
