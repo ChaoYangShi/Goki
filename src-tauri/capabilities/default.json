@@ -2,10 +2,11 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "Goki desktop permissions",
-  "windows": ["pet", "hud"],
+  "windows": ["pet", "hud", "remote"],
   "permissions": [
     "core:default",
     "core:window:allow-set-position",
-    "core:window:allow-start-dragging"
+    "core:window:allow-start-dragging",
+    "dialog:default"
   ]
 }

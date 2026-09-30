@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { Menu } from "@tauri-apps/api/menu";
+import { save } from "@tauri-apps/plugin-dialog";
 import "./styles.css";
 
 type SearchResult = {
@@ -51,6 +53,8 @@ if (!app) {
 const currentWindow = getCurrentWindow();
 if (currentWindow.label === "hud") {
   renderHud(app);
+} else if (currentWindow.label === "remote") {
+  renderRemote(app);
 } else {
   renderPet(app);
 }
@@ -150,6 +154,26 @@ function renderPet(root: HTMLDivElement) {
       return;
     }
     void invoke("show_hud");
+  });
+  let sshMenu: Menu | undefined;
+  button.addEventListener("contextmenu", (event) => {
+    event.preventDefault();
+    void (async () => {
+      try {
+        sshMenu ??= await Menu.new({
+          items: [{
+            id: "ssh-connect",
+            text: "SSH 连接",
+            action: () => void invoke("show_remote_window_command"),
+          }],
+        });
+        await sshMenu.popup(undefined, currentWindow);
+      } catch (error) {
+        console.error("Unable to show SSH menu", error);
+        status.textContent = String(error);
+        status.classList.add("is-visible");
+      }
+    })();
   });
 
   void listen<DragPayload>("tauri://drag-over", () => {
@@ -371,6 +395,231 @@ function renderHud(root: HTMLDivElement) {
     input.select();
     showRecent();
   });
+}
+
+type RemoteEntry = {
+  name: string;
+  path: string;
+  kind: "file" | "folder";
+  size: number;
+  modified?: number;
+};
+
+type SshPrepare = {
+  attemptId: string;
+  host: string;
+  port: number;
+  username: string;
+  fingerprint: string;
+  authMethods: string[];
+  trusted: boolean;
+};
+
+function renderRemote(root: HTMLDivElement) {
+  root.innerHTML = `
+    <main class="remote-shell">
+      <section class="remote-panel" aria-label="SSH 远端文件">
+        <header class="remote-header">
+          <div><strong>Goki SSH</strong><span id="remote-connection-label">未连接</span></div>
+          <button class="remote-button remote-disconnect" id="remote-disconnect" hidden>断开</button>
+        </header>
+        <section class="remote-connect" id="remote-connect">
+          <form id="ssh-form">
+            <label for="ssh-target">连接地址</label>
+            <input id="ssh-target" autocomplete="off" placeholder="user@host[:port]" required />
+            <button class="remote-button" type="submit">连接</button>
+          </form>
+          <div class="remote-status" id="ssh-status">输入 SSH 地址开始连接</div>
+          <div class="ssh-trust" id="ssh-trust" hidden>
+            <strong>主机指纹</strong>
+            <code id="ssh-fingerprint"></code>
+            <p>首次连接请确认这个指纹来自可信服务器。</p>
+            <button class="remote-button" id="ssh-trust-button" type="button">信任并继续</button>
+          </div>
+          <form id="ssh-password-form" hidden>
+            <label for="ssh-password">密码</label>
+            <input id="ssh-password" type="password" autocomplete="current-password" required />
+            <button class="remote-button" type="submit">登录</button>
+          </form>
+        </section>
+        <section class="remote-explorer" id="remote-explorer" hidden>
+          <div class="remote-toolbar">
+            <button class="remote-icon-button" id="remote-up" title="返回上级目录" type="button">↑</button>
+            <code id="remote-path">/</code>
+            <button class="remote-icon-button" id="remote-refresh" title="刷新目录" type="button">↻</button>
+          </div>
+          <div class="remote-list" id="remote-list"></div>
+          <div class="remote-status" id="remote-status">就绪</div>
+        </section>
+      </section>
+    </main>
+  `;
+
+  const connectSection = root.querySelector<HTMLElement>("#remote-connect")!;
+  const explorer = root.querySelector<HTMLElement>("#remote-explorer")!;
+  const form = root.querySelector<HTMLFormElement>("#ssh-form")!;
+  const targetInput = root.querySelector<HTMLInputElement>("#ssh-target")!;
+  const passwordForm = root.querySelector<HTMLFormElement>("#ssh-password-form")!;
+  const passwordInput = root.querySelector<HTMLInputElement>("#ssh-password")!;
+  const trustBox = root.querySelector<HTMLElement>("#ssh-trust")!;
+  const fingerprint = root.querySelector<HTMLElement>("#ssh-fingerprint")!;
+  const trustButton = root.querySelector<HTMLButtonElement>("#ssh-trust-button")!;
+  const status = root.querySelector<HTMLElement>("#ssh-status")!;
+  const remoteStatus = root.querySelector<HTMLElement>("#remote-status")!;
+  const list = root.querySelector<HTMLElement>("#remote-list")!;
+  const pathLabel = root.querySelector<HTMLElement>("#remote-path")!;
+  const connectionLabel = root.querySelector<HTMLElement>("#remote-connection-label")!;
+  const disconnect = root.querySelector<HTMLButtonElement>("#remote-disconnect")!;
+  const up = root.querySelector<HTMLButtonElement>("#remote-up")!;
+  const refresh = root.querySelector<HTMLButtonElement>("#remote-refresh")!;
+  let attempt: SshPrepare | undefined;
+  let sessionId: string | undefined;
+  let currentPath = "/";
+
+  const showError = (message: unknown) => {
+    status.textContent = String(message);
+    remoteStatus.textContent = String(message);
+  };
+
+  const loadDirectory = async (path: string) => {
+    if (!sessionId) return;
+    remoteStatus.textContent = "正在读取目录...";
+    try {
+      const entries = await invoke<RemoteEntry[]>("ssh_list", { sessionId, path });
+      currentPath = path;
+      pathLabel.textContent = path;
+      list.innerHTML = entries.length ? entries.map((entry) => `
+        <button class="remote-entry ${entry.kind}" data-path="${escapeHtml(entry.path)}" data-kind="${entry.kind}" type="button">
+          <span class="remote-entry-icon">${entry.kind === "folder" ? "▸" : "•"}</span>
+          <span class="remote-entry-name">${escapeHtml(entry.name)}</span>
+          <small>${entry.kind === "folder" ? "文件夹" : formatBytes(entry.size)}</small>
+        </button>`).join("") : `<div class="remote-empty">此目录为空</div>`;
+      list.querySelectorAll<HTMLButtonElement>(".remote-entry").forEach((entry) => {
+        entry.addEventListener("click", () => {
+          const path = entry.dataset.path!;
+          if (entry.dataset.kind === "folder") void loadDirectory(path);
+        });
+        entry.addEventListener("contextmenu", (event) => {
+          event.preventDefault();
+          if (entry.dataset.kind === "file") void download(entry.dataset.path!);
+        });
+      });
+      remoteStatus.textContent = `${entries.length} 个项目`;
+    } catch (error) {
+      remoteStatus.textContent = String(error);
+    }
+  };
+
+  const download = async (path: string) => {
+    if (!sessionId) return;
+    remoteStatus.textContent = "正在下载...";
+    try {
+      const fileName = path.split("/").filter(Boolean).pop() ?? "download";
+      const selectedPath = await save({
+        defaultPath: fileName,
+        title: "选择下载位置",
+      });
+      if (!selectedPath) {
+        remoteStatus.textContent = "已取消下载";
+        return;
+      }
+      const localPath = await invoke<string>("ssh_download", { sessionId, remotePath: path, localPath: selectedPath });
+      remoteStatus.textContent = `已下载到 ${localPath}`;
+    } catch (error) {
+      remoteStatus.textContent = String(error);
+    }
+  };
+
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    status.textContent = "正在等待远端响应...";
+    try {
+      attempt = await invoke<SshPrepare>("ssh_prepare", { target: targetInput.value });
+      fingerprint.textContent = `SHA256:${attempt.fingerprint}`;
+      trustBox.hidden = attempt.trusted;
+      passwordForm.hidden = !attempt.trusted;
+      status.textContent = attempt.trusted ? "主机已信任，请输入密码" : "请确认主机指纹后继续";
+      if (attempt.trusted) passwordInput.focus();
+    } catch (error) {
+      showError(error);
+    }
+  });
+
+  trustButton.addEventListener("click", async () => {
+    if (!attempt) return;
+    try {
+      await invoke("ssh_trust", { attemptId: attempt.attemptId });
+      trustBox.hidden = true;
+      passwordForm.hidden = false;
+      status.textContent = "主机已信任，请输入密码";
+      passwordInput.focus();
+    } catch (error) {
+      showError(error);
+    }
+  });
+
+  passwordForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!attempt) return;
+    status.textContent = "正在认证...";
+    try {
+      const result = await invoke<{ sessionId: string; host: string; cwd: string }>("ssh_authenticate", {
+        attemptId: attempt.attemptId,
+        password: passwordInput.value,
+      });
+      passwordInput.value = "";
+      sessionId = result.sessionId;
+      currentPath = result.cwd;
+      connectionLabel.textContent = `${attempt.username}@${result.host}`;
+      connectSection.hidden = true;
+      explorer.hidden = false;
+      disconnect.hidden = false;
+      await loadDirectory(currentPath);
+    } catch (error) {
+      passwordInput.value = "";
+      showError(error);
+    }
+  });
+
+  const closeSession = async () => {
+    if (sessionId) await invoke("ssh_disconnect", { sessionId }).catch(() => undefined);
+    sessionId = undefined;
+    attempt = undefined;
+    explorer.hidden = true;
+    connectSection.hidden = false;
+    disconnect.hidden = true;
+    connectionLabel.textContent = "未连接";
+    status.textContent = "已断开连接";
+  };
+  disconnect.addEventListener("click", () => void closeSession());
+  refresh.addEventListener("click", () => void loadDirectory(currentPath));
+  up.addEventListener("click", () => {
+    if (currentPath === "/") return;
+    const parent = currentPath.replace(/\/+$/, "").split("/").slice(0, -1).join("/") || "/";
+    void loadDirectory(parent);
+  });
+
+  void listen<DragPayload>("tauri://drag-over", () => root.classList.add("is-dragging"));
+  void listen("tauri://drag-leave", () => root.classList.remove("is-dragging"));
+  void listen<DragPayload>("tauri://drag-drop", async (event) => {
+    root.classList.remove("is-dragging");
+    if (!sessionId || !(event.payload.paths?.length)) return;
+    remoteStatus.textContent = "正在上传...";
+    try {
+      const uploaded = await invoke<string[]>("ssh_upload", { sessionId, localPaths: event.payload.paths, remoteDir: currentPath });
+      remoteStatus.textContent = `已上传 ${uploaded.length} 个文件`;
+      await loadDirectory(currentPath);
+    } catch (error) {
+      remoteStatus.textContent = String(error);
+    }
+  });
+}
+
+function formatBytes(value: number) {
+  if (value < 1024) return `${value} B`;
+  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+  if (value < 1024 * 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+  return `${(value / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
 
 function readRecent(): SearchResult[] {

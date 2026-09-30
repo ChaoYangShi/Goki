@@ -36,6 +36,18 @@
         "skipTaskbar": true,
         "visible": false,
         "shadow": false
+      },
+      {
+        "label": "remote",
+        "title": "Goki SSH",
+        "width": 980,
+        "height": 680,
+        "minWidth": 720,
+        "minHeight": 480,
+        "visible": false,
+        "resizable": true,
+        "skipTaskbar": false,
+        "shadow": true
       }
     ],
     "security": {

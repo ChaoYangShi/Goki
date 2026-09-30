@@ -1,9 +1,12 @@
 use std::{
+    collections::{HashMap, HashSet},
     fs::{self, File},
     io,
+    net::{TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
+    sync::Mutex,
     thread,
-    time::Duration,
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use global_hotkey::{
@@ -11,11 +14,13 @@ use global_hotkey::{
     GlobalHotKeyEvent, GlobalHotKeyManager,
 };
 use serde::Serialize;
+use ssh2::{HashType, Session};
 use sysinfo::System;
 use tauri::{
     menu::{MenuBuilder, MenuItemBuilder},
     tray::TrayIconBuilder,
-    AppHandle, Emitter, Manager, PhysicalPosition, WindowEvent,
+    AppHandle, Emitter, Manager, PhysicalPosition, State, WebviewUrl, WebviewWindow,
+    WebviewWindowBuilder, WindowEvent,
 };
 #[cfg(not(target_os = "macos"))]
 use walkdir::WalkDir;
@@ -35,6 +40,412 @@ struct OperationResult {
     kind: String,
     path: String,
     message: String,
+}
+
+struct PendingSsh {
+    session: Session,
+    username: String,
+    host: String,
+    port: u16,
+    fingerprint: String,
+}
+
+struct ActiveSsh {
+    session: Session,
+    cwd: String,
+}
+
+#[derive(Default)]
+struct SshState {
+    pending: Mutex<HashMap<String, PendingSsh>>,
+    sessions: Mutex<HashMap<String, ActiveSsh>>,
+    trusted: Mutex<HashSet<String>>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SshPrepareResult {
+    attempt_id: String,
+    host: String,
+    port: u16,
+    username: String,
+    fingerprint: String,
+    auth_methods: Vec<String>,
+    trusted: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SshAuthResult {
+    session_id: String,
+    username: String,
+    host: String,
+    cwd: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemoteEntry {
+    name: String,
+    path: String,
+    kind: String,
+    size: u64,
+    modified: Option<u64>,
+}
+
+fn new_id(prefix: &str) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    format!("{prefix}-{now:x}")
+}
+
+fn parse_ssh_target(target: &str) -> Result<(String, String, u16), String> {
+    let (username, address) = target
+        .trim()
+        .split_once('@')
+        .ok_or_else(|| "请输入 user@host 或 user@host:port".to_owned())?;
+    if username.is_empty() || address.is_empty() {
+        return Err("用户名和主机地址不能为空".to_owned());
+    }
+    let (host, port) = if let Some(rest) = address.strip_prefix('[') {
+        let (host, suffix) = rest
+            .split_once(']')
+            .ok_or_else(|| "IPv6 地址格式错误".to_owned())?;
+        let port = suffix.strip_prefix(':').unwrap_or("22");
+        (
+            host.to_owned(),
+            port.parse::<u16>().map_err(|_| "端口格式错误".to_owned())?,
+        )
+    } else if let Some((host, port)) = address.rsplit_once(':') {
+        if host.contains(':') {
+            (address.to_owned(), 22)
+        } else {
+            (
+                host.to_owned(),
+                port.parse::<u16>().map_err(|_| "端口格式错误".to_owned())?,
+            )
+        }
+    } else {
+        (address.to_owned(), 22)
+    };
+    if host.is_empty() || port == 0 {
+        return Err("主机地址或端口无效".to_owned());
+    }
+    Ok((username.to_owned(), host, port))
+}
+
+fn remote_join(directory: &str, name: &str) -> String {
+    let directory = if directory.is_empty() { "/" } else { directory };
+    if directory == "/" {
+        format!("/{name}")
+    } else {
+        format!("{}/{}", directory.trim_end_matches('/'), name)
+    }
+}
+
+#[tauri::command]
+fn ssh_prepare(target: String, state: State<'_, SshState>) -> Result<SshPrepareResult, String> {
+    let (username, host, port) = parse_ssh_target(&target)?;
+    let mut addresses = (host.as_str(), port)
+        .to_socket_addrs()
+        .map_err(|error| format!("无法解析主机 {host}: {error}"))?;
+    let tcp = addresses
+        .find_map(|address| TcpStream::connect_timeout(&address, Duration::from_secs(10)).ok())
+        .ok_or_else(|| format!("无法连接到 {host}:{port}"))?;
+    tcp.set_read_timeout(Some(Duration::from_secs(15)))
+        .map_err(io_error)?;
+    tcp.set_write_timeout(Some(Duration::from_secs(15)))
+        .map_err(io_error)?;
+    let mut session = Session::new().map_err(io_error)?;
+    session.set_tcp_stream(tcp);
+    session.handshake().map_err(io_error)?;
+    let fingerprint = session
+        .host_key_hash(HashType::Sha256)
+        .map(|bytes| {
+            bytes
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        })
+        .ok_or_else(|| "远端没有提供主机指纹".to_owned())?;
+    let trusted = state
+        .trusted
+        .lock()
+        .map_err(|_| "SSH 状态锁定失败")?
+        .contains(&fingerprint);
+    let auth_methods = session
+        .auth_methods(&username)
+        .map_err(io_error)?
+        .split(',')
+        .filter(|item| !item.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let attempt_id = new_id("ssh-attempt");
+    state
+        .pending
+        .lock()
+        .map_err(|_| "SSH 状态锁定失败")?
+        .insert(
+            attempt_id.clone(),
+            PendingSsh {
+                session,
+                username: username.clone(),
+                host: host.clone(),
+                port,
+                fingerprint: fingerprint.clone(),
+            },
+        );
+    Ok(SshPrepareResult {
+        attempt_id,
+        host,
+        port,
+        username,
+        fingerprint,
+        auth_methods,
+        trusted,
+    })
+}
+
+#[tauri::command]
+fn ssh_trust(attempt_id: String, state: State<'_, SshState>) -> Result<(), String> {
+    let pending = state.pending.lock().map_err(|_| "SSH 状态锁定失败")?;
+    let attempt = pending
+        .get(&attempt_id)
+        .ok_or_else(|| "SSH 连接已过期".to_owned())?;
+    state
+        .trusted
+        .lock()
+        .map_err(|_| "SSH 状态锁定失败")?
+        .insert(attempt.fingerprint.clone());
+    Ok(())
+}
+
+#[tauri::command]
+fn ssh_authenticate(
+    attempt_id: String,
+    password: String,
+    state: State<'_, SshState>,
+) -> Result<SshAuthResult, String> {
+    let mut pending = state.pending.lock().map_err(|_| "SSH 状态锁定失败")?;
+    let attempt = pending
+        .remove(&attempt_id)
+        .ok_or_else(|| "SSH 连接已过期".to_owned())?;
+    let trusted = state
+        .trusted
+        .lock()
+        .map_err(|_| "SSH 状态锁定失败")?
+        .contains(&attempt.fingerprint);
+    if !trusted {
+        pending.insert(attempt_id, attempt);
+        return Err("请先确认远端主机指纹".to_owned());
+    }
+    let PendingSsh {
+        session,
+        username,
+        host,
+        port,
+        fingerprint,
+    } = attempt;
+    if let Err(error) = session.userauth_password(&username, &password) {
+        pending.insert(
+            attempt_id,
+            PendingSsh {
+                session,
+                username,
+                host,
+                port,
+                fingerprint,
+            },
+        );
+        return Err(format!("密码认证失败: {error}"));
+    }
+    if !session.authenticated() {
+        return Err("服务器拒绝了密码认证".to_owned());
+    }
+    let sftp = session.sftp().map_err(io_error)?;
+    let cwd = sftp
+        .realpath(Path::new("."))
+        .map_err(io_error)?
+        .to_string_lossy()
+        .into_owned();
+    let session_id = new_id("ssh-session");
+    let result = SshAuthResult {
+        session_id: session_id.clone(),
+        username: username.clone(),
+        host: host.clone(),
+        cwd: cwd.clone(),
+    };
+    state
+        .sessions
+        .lock()
+        .map_err(|_| "SSH 状态锁定失败")?
+        .insert(session_id, ActiveSsh { session, cwd });
+    Ok(result)
+}
+
+#[tauri::command]
+fn ssh_list(
+    session_id: String,
+    path: String,
+    state: State<'_, SshState>,
+) -> Result<Vec<RemoteEntry>, String> {
+    let sessions = state.sessions.lock().map_err(|_| "SSH 状态锁定失败")?;
+    let active = sessions
+        .get(&session_id)
+        .ok_or_else(|| "SSH 会话不存在".to_owned())?;
+    let sftp = active.session.sftp().map_err(io_error)?;
+    let directory = if path.trim().is_empty() {
+        active.cwd.as_str()
+    } else {
+        path.trim()
+    };
+    let mut entries = sftp
+        .readdir(Path::new(directory))
+        .map_err(io_error)?
+        .into_iter()
+        .filter_map(|(path, stat)| {
+            let name = path.file_name()?.to_string_lossy().into_owned();
+            if name == "." || name == ".." {
+                return None;
+            }
+            let is_directory = stat
+                .perm
+                .map(|permissions| permissions & 0o170000 == 0o040000)
+                .unwrap_or(false);
+            let kind = if is_directory { "folder" } else { "file" };
+            Some(RemoteEntry {
+                name: name.clone(),
+                path: remote_join(directory, &name),
+                kind: kind.to_owned(),
+                size: stat.size.unwrap_or(0),
+                modified: stat.mtime,
+            })
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| (entry.kind != "folder", entry.name.to_lowercase()));
+    Ok(entries)
+}
+
+#[tauri::command]
+fn ssh_download(
+    session_id: String,
+    remote_path: String,
+    local_path: String,
+    app: AppHandle,
+    state: State<'_, SshState>,
+) -> Result<String, String> {
+    let sessions = state.sessions.lock().map_err(|_| "SSH 状态锁定失败")?;
+    let active = sessions
+        .get(&session_id)
+        .ok_or_else(|| "SSH 会话不存在".to_owned())?;
+    let sftp = active.session.sftp().map_err(io_error)?;
+    let mut source = sftp.open(Path::new(&remote_path)).map_err(io_error)?;
+    let file_name = remote_path
+        .rsplit('/')
+        .next()
+        .filter(|name| !name.is_empty())
+        .unwrap_or("download");
+    let destination = if local_path.trim().is_empty() {
+        unique_file(
+            &dirs::download_dir()
+                .or_else(dirs::home_dir)
+                .ok_or_else(|| "找不到本地下载目录".to_owned())?
+                .join(file_name),
+        )
+    } else {
+        PathBuf::from(&local_path)
+    };
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(io_error)?;
+    }
+    let temporary = destination.with_extension(format!("goki-part-{}", new_id("download")));
+    let mut output = File::create(&temporary).map_err(io_error)?;
+    io::copy(&mut source, &mut output).map_err(io_error)?;
+    fs::rename(&temporary, &destination).map_err(io_error)?;
+    let destination_string = destination.to_string_lossy().into_owned();
+    let _ = app.emit_to("remote", "sftp-transfer", serde_json::json!({ "kind": "download", "path": destination_string, "status": "completed" }));
+    Ok(destination.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn ssh_upload(
+    session_id: String,
+    local_paths: Vec<String>,
+    remote_dir: String,
+    app: AppHandle,
+    state: State<'_, SshState>,
+) -> Result<Vec<String>, String> {
+    let sessions = state.sessions.lock().map_err(|_| "SSH 状态锁定失败")?;
+    let active = sessions
+        .get(&session_id)
+        .ok_or_else(|| "SSH 会话不存在".to_owned())?;
+    let sftp = active.session.sftp().map_err(io_error)?;
+    let mut uploaded = Vec::new();
+    for local in local_paths {
+        let source_path = PathBuf::from(&local);
+        if !source_path.is_file() {
+            continue;
+        }
+        let name = source_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| "无法读取本地文件名".to_owned())?;
+        let remote_path = remote_join(&remote_dir, name);
+        let mut input = File::open(&source_path).map_err(io_error)?;
+        let mut output = sftp.create(Path::new(&remote_path)).map_err(io_error)?;
+        io::copy(&mut input, &mut output).map_err(io_error)?;
+        uploaded.push(remote_path);
+    }
+    let _ = app.emit_to(
+        "remote",
+        "sftp-transfer",
+        serde_json::json!({ "kind": "upload", "paths": uploaded, "status": "completed" }),
+    );
+    Ok(uploaded)
+}
+
+#[tauri::command]
+fn ssh_disconnect(session_id: String, state: State<'_, SshState>) -> Result<(), String> {
+    state
+        .sessions
+        .lock()
+        .map_err(|_| "SSH 状态锁定失败")?
+        .remove(&session_id);
+    Ok(())
+}
+
+#[tauri::command]
+fn show_ssh_menu(window: WebviewWindow, app: AppHandle) -> Result<(), String> {
+    let connect = MenuItemBuilder::with_id("ssh-connect", "SSH 连接")
+        .build(&app)
+        .map_err(io_error)?;
+    let menu = MenuBuilder::new(&app)
+        .items(&[&connect])
+        .build()
+        .map_err(io_error)?;
+    window.popup_menu(&menu).map_err(io_error)
+}
+
+fn show_remote_window(app: &AppHandle) -> Result<(), String> {
+    let window = match app.get_webview_window("remote") {
+        Some(window) => window,
+        None => WebviewWindowBuilder::new(app, "remote", WebviewUrl::App("index.html".into()))
+            .title("Goki SSH")
+            .inner_size(980.0, 680.0)
+            .min_inner_size(720.0, 480.0)
+            .resizable(true)
+            .build()
+            .map_err(io_error)?,
+    };
+    window.show().map_err(io_error)?;
+    window.set_focus().map_err(io_error)
+}
+
+#[tauri::command]
+fn show_remote_window_command(app: AppHandle) -> Result<(), String> {
+    show_remote_window(&app)
 }
 
 #[tauri::command]
@@ -459,6 +870,13 @@ fn place_pet(app: &tauri::App) {
 
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .manage(SshState::default())
+        .on_menu_event(|app, event| {
+            if event.id.as_ref() == "ssh-connect" {
+                let _ = show_remote_window(app);
+            }
+        })
         .setup(|app| {
             let quit = MenuItemBuilder::with_id("quit", "退出 Goki").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&quit]).build()?;
@@ -480,25 +898,29 @@ pub fn run() {
             install_global_hotkey(app).map_err(|error| error.to_string())?;
             Ok(())
         })
-        .on_window_event(|window, event| {
-            if window.label() != "hud" {
-                return;
+        .on_window_event(|window, event| match (window.label(), event) {
+            ("hud" | "remote", WindowEvent::CloseRequested { api, .. }) => {
+                api.prevent_close();
+                let _ = window.hide();
             }
-            match event {
-                WindowEvent::CloseRequested { api, .. } => {
-                    api.prevent_close();
-                    let _ = window.hide();
-                }
-                WindowEvent::Focused(false) => {
-                    let _ = window.hide();
-                }
-                _ => {}
+            ("hud", WindowEvent::Focused(false)) => {
+                let _ = window.hide();
             }
+            _ => {}
         })
         .invoke_handler(tauri::generate_handler![
             search_files,
             cpu_usage,
             process_drop,
+            ssh_prepare,
+            ssh_trust,
+            ssh_authenticate,
+            ssh_list,
+            ssh_download,
+            ssh_upload,
+            ssh_disconnect,
+            show_ssh_menu,
+            show_remote_window_command,
             show_hud,
             hide_hud,
             open_path

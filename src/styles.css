@@ -293,3 +293,95 @@ kbd {
   0%, 100% { transform: translateX(0); }
   50% { transform: translateX(6px); }
 }
+
+.remote-shell {
+  width: 100%;
+  height: 100%;
+  padding: 18px;
+  color: #eafcff;
+  background: #071016;
+}
+.remote-panel {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid rgba(114, 226, 246, 0.35);
+  border-radius: 12px;
+  background: rgba(12, 24, 31, 0.98);
+  box-shadow: 0 16px 50px rgba(0, 0, 0, 0.4);
+}
+.remote-header,
+.remote-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 13px 16px;
+  border-bottom: 1px solid rgba(159, 235, 255, 0.13);
+}
+.remote-header > div { display: grid; gap: 3px; flex: 1; }
+.remote-header strong { font-size: 15px; }
+.remote-header span,
+.remote-status,
+.remote-empty { color: rgba(207, 241, 245, 0.55); font-size: 12px; }
+.remote-connect { width: min(100%, 510px); margin: auto; padding: 28px; }
+.remote-connect form { display: grid; gap: 9px; }
+.remote-connect label { color: rgba(207, 241, 245, 0.7); font-size: 12px; }
+.remote-connect input {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid rgba(159, 235, 255, 0.24);
+  border-radius: 7px;
+  outline: none;
+  color: #eafcff;
+  background: rgba(0, 0, 0, 0.2);
+}
+.remote-connect input:focus { border-color: #84eefb; }
+.remote-button,
+.remote-icon-button {
+  border: 1px solid rgba(132, 238, 251, 0.35);
+  border-radius: 6px;
+  color: #eafcff;
+  background: rgba(73, 196, 218, 0.12);
+  cursor: pointer;
+}
+.remote-button { width: max-content; padding: 8px 14px; }
+.remote-icon-button { width: 30px; height: 30px; padding: 0; font-size: 18px; }
+.remote-button:hover,
+.remote-icon-button:hover { background: rgba(73, 196, 218, 0.25); }
+.remote-status { min-height: 18px; padding-top: 14px; }
+.ssh-trust {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
+  padding: 14px;
+  border: 1px solid rgba(255, 204, 106, 0.4);
+  border-radius: 7px;
+  background: rgba(255, 178, 64, 0.08);
+}
+.ssh-trust code { overflow-wrap: anywhere; color: #ffd36e; font-size: 12px; }
+.ssh-trust p { margin: 0; color: rgba(255, 234, 190, 0.72); font-size: 12px; }
+.remote-explorer { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+.remote-toolbar code { flex: 1; overflow: hidden; color: #bdeff5; text-overflow: ellipsis; white-space: nowrap; }
+.remote-list { min-height: 0; flex: 1; overflow: auto; padding: 8px; }
+.remote-entry {
+  display: grid;
+  width: 100%;
+  grid-template-columns: 25px 1fr max-content;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 6px;
+  color: inherit;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+}
+.remote-entry:hover { background: rgba(91, 214, 237, 0.12); }
+.remote-entry-icon { color: #84e9f8; text-align: center; }
+.remote-entry-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.remote-entry small { color: rgba(207, 241, 245, 0.43); }
+.remote-empty { padding: 28px; text-align: center; }
+.remote-shell.is-dragging .remote-panel { border-color: #ffd36e; box-shadow: 0 0 28px rgba(255, 178, 64, 0.24); }
