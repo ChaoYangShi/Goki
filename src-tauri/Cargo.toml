@@ -1,6 +1,6 @@
 [package]
 name = "goki"
-version = "0.1.0"
+version = "0.2.0"
 description = "Goki cross-platform desktop companion"
 authors = ["Goki"]
 edition = "2021"
